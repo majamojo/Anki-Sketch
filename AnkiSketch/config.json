@@ -1,0 +1,20 @@
+{
+    "hotkeys": {
+        "pen_1": "Alt+1",
+        "pen_2": "Alt+2",
+        "pen_3": "Alt+3",
+        "pen_4": "Alt+4",
+        "undo": "Alt+Z",
+        "redo": "Alt+Y",
+        "perfect_freehand": "Alt+X",
+        "calligraphy": "Alt+C",
+        "text": "Alt+T",
+        "stroke_delete": "Alt+D",
+        "stroke_delete_hold": "Shift+D",
+        "clear": ".",
+        "toggle_visibility": ",",
+        "small_canvas": "Alt+B",
+        "play_sound": "",
+        "toggle_addon": "Ctrl+R"
+    }
+}

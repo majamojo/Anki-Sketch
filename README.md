@@ -10,7 +10,14 @@ which is based on Anki-TouchScreen by Michal Krassowski. Licensed GPL-3.0, same 
 - `AnkiSketch/` is the add-on folder.
   - `__init__.py`: menu, settings, injection into the reviewer (`gui_hooks.webview_will_set_content`).
   - `web/canvas.html`, `web/sketch.css`, `web/sketch.js`: toolbar, styles and drawing logic, served via `setWebExports`.
+  - `web/hotkeys.js`, `web/hotkeys_dialog.*`: hotkey matching and the settings dialog.
+  - `config.json` / `config.md`: hotkeys.
   - `web/Caligrapher.js`, `web/PerfectFreehand.js`: stroke libraries (unchanged from upstream).
+
+## Hotkeys
+Every toolbar action has a rebindable hotkey: **AnkiSketch > Hotkeys…** (or Tools > Add-ons > AnkiSketch > Config).
+Click an action's key, press the new combination, Save. Hotkeys fire on key press (upstream issue #58).
+Defaults match AnkiDraw; format and action list are in `AnkiSketch/config.md`.
 
 ## Dev install (Windows)
 Link the repo's `AnkiSketch` folder into Anki's add-ons folder with a directory junction, so edits show up after an Anki restart:

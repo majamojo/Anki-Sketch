@@ -25,7 +25,10 @@ Layout:
     web/canvas.html     toolbar and canvases (inlined into the reviewer body)
     web/sketch.css      styles (served via setWebExports)
     web/sketch.js       drawing logic (served via setWebExports)
+    web/hotkeys.js      key-combination helpers shared by the reviewer and the hotkey dialog
+    web/hotkeys_dialog.*  hotkey settings dialog (AnkiSketch > Hotkeys)
     web/Caligrapher.js, web/PerfectFreehand.js   stroke libraries
+    config.json         hotkeys (documented in config.md)
 """
 
 __addon_name__ = "AnkiSketch"
@@ -37,6 +40,7 @@ from pathlib import Path
 from aqt import mw, gui_hooks
 from aqt.reviewer import Reviewer
 from aqt.utils import showWarning
+from aqt.webview import AnkiWebView
 
 from aqt.qt import QAction, QMenu, QColorDialog, QMessageBox, QInputDialog, QLabel,\
    QPushButton, QDialog, QVBoxLayout, QComboBox, QHBoxLayout, QSpinBox, QCheckBox, QFontDialog, QFont
@@ -56,6 +60,95 @@ with open(ADDON_DIR / "web" / "canvas.html", encoding="utf8") as f:
 # AnkiDraw's own "ts_*" keys. On first load, AnkiDraw's values (if any) are
 # used as the starting point.
 PROFILE_KEY_PREFIX = "anki_sketch."
+
+# Hotkey actions, in the order shown in the Hotkeys dialog.
+# (id, label, hold) — "hold" actions are on only while the key is held.
+# Defaults live in config.json; config.md documents the format.
+HOTKEY_ACTIONS = [
+    ("pen_1", "Pen 1", False),
+    ("pen_2", "Pen 2", False),
+    ("pen_3", "Pen 3", False),
+    ("pen_4", "Pen 4", False),
+    ("undo", "Undo", False),
+    ("redo", "Redo", False),
+    ("perfect_freehand", "Perfect freehand mode", False),
+    ("calligraphy", "Calligraphy mode", False),
+    ("text", "Text mode", False),
+    ("stroke_delete", "Stroke delete mode", False),
+    ("stroke_delete_hold", "Stroke delete (hold)", True),
+    ("clear", "Clear drawing", False),
+    ("toggle_visibility", "Hide / show drawing", False),
+    ("small_canvas", "Small / full canvas", False),
+    ("play_sound", "Replay card audio", False),
+    ("toggle_addon", "Turn AnkiSketch on / off", False),
+]
+HOTKEY_IDS = [a[0] for a in HOTKEY_ACTIONS]
+# Handled by a Qt shortcut (works anywhere in Anki), not by the reviewer's JS.
+QT_HOTKEY_IDS = {"toggle_addon"}
+
+# Keys Anki itself uses in review or the main window (same format as bindings).
+# Only used to warn in the Hotkeys dialog.
+ANKI_KEYS = [
+    "Space", "Enter", "1", "2", "3", "4", "A", "B", "D", "E", "I", "O", "R", "S", "T", "V", "Y",
+    "-", "=", "/", "Shift+1", "Shift+2", "Shift+8", "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4",
+    "Ctrl+5", "Ctrl+6", "Ctrl+7", "Ctrl+Z", "Esc", "F5",
+]
+
+def hotkey_defaults():
+    defaults = mw.addonManager.addonConfigDefaults(ADDON_PACKAGE) or {}
+    return dict(defaults.get("hotkeys") or {})
+
+def hotkey_bindings():
+    """
+    Current bindings: config.json defaults, overridden by the user's saved values.
+    (Anki's getConfig only merges top-level keys, so new actions added in an
+    update would otherwise be missing.)
+    """
+    bindings = hotkey_defaults()
+    conf = mw.addonManager.getConfig(__name__) or {}
+    for key, value in (conf.get("hotkeys") or {}).items():
+        if key in HOTKEY_IDS and isinstance(value, str):
+            bindings[key] = value
+    return bindings
+
+def save_hotkey_bindings(bindings):
+    conf = mw.addonManager.getConfig(__name__) or {}
+    conf["hotkeys"] = {key: str(bindings.get(key, "")) for key in HOTKEY_IDS}
+    mw.addonManager.writeConfig(__name__, conf)
+    apply_hotkeys()
+
+QT_KEY_NAMES = {
+    "PageUp": "PgUp", "PageDown": "PgDown", "NumEnter": "Enter", "NumAdd": "+",
+    "NumSubtract": "-", "NumMultiply": "*", "NumDivide": "/", "NumDecimal": ".",
+}
+
+def qt_key_sequence(binding):
+    """
+    Turn a binding ("Ctrl+R", "Alt+PageUp", "Num5") into a QKeySequence.
+    """
+    if not binding:
+        return QKeySequence()
+    parts = binding.split("+")
+    key = parts[-1]
+    if key.startswith("Num") and key[3:].isdigit():
+        key = key[3:]
+    key = QT_KEY_NAMES.get(key, key)
+    return QKeySequence("+".join([p for p in parts[:-1] if p] + [key]))
+
+def apply_hotkeys():
+    """
+    Push the current bindings to the Qt shortcut and to an open reviewer.
+    """
+    bindings = hotkey_bindings()
+    try:
+        ts_menu_switch.setShortcut(qt_key_sequence(bindings.get("toggle_addon", "")))
+    except NameError:
+        pass  # menu not built yet
+    if mw.state == "review" and ts_state_on:
+        execute_js(f"if (typeof set_hotkeys === 'function') {{ set_hotkeys({json_for_script(js_hotkeys(bindings))}); }}")
+
+def js_hotkeys(bindings):
+    return {key: value for key, value in bindings.items() if key not in QT_HOTKEY_IDS}
 
 ts_profile_loaded = False
 
@@ -244,6 +337,7 @@ def sketch_js_config():
                 "italic": bool(ts_font_italic),
             },
         },
+        "hotkeys": js_hotkeys(hotkey_bindings()),
     }
 
 def json_for_script(value):
@@ -260,10 +354,73 @@ def sketch_body_html():
         + f'<link rel="stylesheet" type="text/css" href="{WEB_BASE}/sketch.css">'
         + f"<style>{sketch_root_css()}</style>"
         + f"<script>window.AnkiSketchConfig = {json_for_script(sketch_js_config())};</script>"
+        + f'<script src="{WEB_BASE}/hotkeys.js"></script>'
         + f'<script src="{WEB_BASE}/sketch.js"></script>'
         + f'<script src="{WEB_BASE}/Caligrapher.js"></script>'
         + f'<script src="{WEB_BASE}/PerfectFreehand.js"></script>'
     )
+
+HOTKEY_DIALOG_CMD = "ankisketch_hotkeys:"
+
+class HotkeyDialog(QDialog):
+    """
+    Hotkey settings: one row per action, click a key button then press keys.
+    Runs in a web view so keys are captured exactly as the reviewer sees them.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent or mw)
+        self.setWindowTitle("AnkiSketch Hotkeys")
+        self.resize(620, 680)
+        self.web = AnkiWebView(parent=self, title="AnkiSketch hotkeys")
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.web)
+        self.setLayout(layout)
+        self.web.set_bridge_command(self.on_bridge_cmd, self)
+        payload = {
+            "actions": [
+                {"id": action_id, "label": label, "hold": hold, "qt": action_id in QT_HOTKEY_IDS}
+                for action_id, label, hold in HOTKEY_ACTIONS
+            ],
+            "bindings": hotkey_bindings(),
+            "defaults": hotkey_defaults(),
+            "ankiKeys": ANKI_KEYS,
+        }
+        body = (
+            "<h1>AnkiSketch hotkeys</h1>"
+            "<p class=intro>Click a key, then press the combination you want. Hotkeys fire on key press.</p>"
+            "<div id=app></div>"
+            f"<script>window.AnkiSketchHotkeyDialog = {json_for_script(payload)};</script>"
+        )
+        self.web.stdHtml(
+            body,
+            css=[f"{WEB_BASE}/hotkeys_dialog.css"],
+            js=[f"{WEB_BASE}/hotkeys.js", f"{WEB_BASE}/hotkeys_dialog.js"],
+            context=self,
+        )
+
+    def on_bridge_cmd(self, cmd):
+        if not cmd.startswith(HOTKEY_DIALOG_CMD):
+            return
+        cmd = cmd[len(HOTKEY_DIALOG_CMD):]
+        if cmd.startswith("save:"):
+            bindings = json.loads(cmd[len("save:"):])
+            if isinstance(bindings, dict):
+                save_hotkey_bindings({k: v for k, v in bindings.items() if k in HOTKEY_IDS and isinstance(v, str)})
+            self.accept()
+        elif cmd == "cancel":
+            self.reject()
+
+    def done(self, result):
+        if self.web:
+            self.web.cleanup()
+            self.web = None
+        super().done(result)
+
+@slot()
+def ts_open_hotkey_dialog():
+    HotkeyDialog(mw).exec()
+    return True
 
 def on_webview_will_set_content(web_content, context):
     if not isinstance(context, Reviewer):
@@ -619,8 +776,8 @@ def ts_setup_menu():
     ts_toolbar_settings = QAction("""&Toolbar and canvas location settings""", mw)
     ts_font_settings = QAction("""Select &Font for text writing""", mw)    
 
-    ts_toggle_seq = QKeySequence("Ctrl+r")
-    ts_menu_switch.setShortcut(ts_toggle_seq)
+    ts_menu_switch.setShortcut(qt_key_sequence(hotkey_bindings().get("toggle_addon", "")))
+    ts_hotkey_settings = QAction("""&Hotkeys…""", mw)
 
     ts_pen_color_menu = QMenu("Set pen 1-4 color", mw)
     ts_menu_pen1_color = QAction("Set Pen 1 Color", mw)
@@ -664,6 +821,7 @@ def ts_setup_menu():
     menu.addMenu(ts_pen_opacity_menu)
     menu.addAction(ts_toolbar_settings)
     menu.addAction(ts_font_settings)
+    menu.addAction(ts_hotkey_settings)
 
     ts_menu_pen1_color.triggered.connect(lambda: ts_change_pen_color(1))
     ts_menu_pen2_color.triggered.connect(lambda: ts_change_pen_color(2))
@@ -686,6 +844,7 @@ def ts_setup_menu():
     ts_menu_zen_mode.triggered.connect(ts_change_zen_mode_settings)
     ts_toolbar_settings.triggered.connect(ts_change_toolbar_settings)
     ts_font_settings.triggered.connect(ts_change_font_settings)
+    ts_hotkey_settings.triggered.connect(ts_open_hotkey_dialog)
 
 #
 # ONLOAD SECTION
@@ -700,6 +859,7 @@ def ts_onload():
     gui_hooks.reviewer_did_show_question.append(lambda card: clear_blackboard())
     gui_hooks.reviewer_did_show_answer.append(lambda card: resize_js())
     gui_hooks.webview_will_set_content.append(on_webview_will_set_content)
+    mw.addonManager.setConfigAction(__name__, ts_open_hotkey_dialog)
     ts_setup_menu()
 
 ts_onload()

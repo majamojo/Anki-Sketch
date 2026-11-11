@@ -1188,96 +1188,124 @@ function updateVariable() {
     status.textContent = `Variable Value: ${variable}`; // Update display
 }
 
-document.addEventListener('keydown', function(e) {
-    // For hold mode, start deleting when shift+d is pressed
-    if(textWriting)return;
-    if ((e.keyCode == 68 || e.key == "d") && e.shiftKey) {
-        e.preventDefault();
-        // Only activate if this is NOT a repeat event (first press)
-        if (!e.repeat) {
-            enter_stroke_delete_mode();
-        }
-    }
-
-});
-
-document.addEventListener('keyup', function(e) {
-    // For hold mode, stop deleting when shift+d is released
-    if ((e.keyCode == 68 || e.key == "d") && isDeleting) {
-        finishDelete()
-        exit_stroke_delete_mode();
-    }
-});
 // TODO chinese mode?
 // TODO save draw info in cards, no need to save redos
 // TODO make clear per side of card by marking which items have been cleared
 // TODO add merging of front into back for correct behaviour with saving draw info
 // TODO add toggle to not apply front card to the back one
 // TODO clear history button?
-document.addEventListener('keyup', function(e) {
-    // alt + z
-    if ((e.keyCode == 90 || e.key == "z") && e.altKey) {
-		e.preventDefault();
-        ts_undo();
+
+// ----------------------------------------- Hotkeys -----------------------------------------
+// Bindings come from config.json via window.AnkiSketchConfig.hotkeys and can be
+// changed in the AnkiSketch > Hotkeys dialog. Actions fire on keydown.
+
+// Press-to-trigger actions. `repeat: true` lets a held key repeat (like undo in OneNote).
+var hotkeyActions = {
+    pen_1: { run: function() { activate_pen1(); } },
+    pen_2: { run: function() { activate_pen2(); } },
+    pen_3: { run: function() { activate_pen3(); } },
+    pen_4: { run: function() { activate_pen4(); } },
+    undo: { run: function() { ts_undo(); }, repeat: true },
+    redo: { run: function() { ts_redo(); }, repeat: true },
+    perfect_freehand: { run: function() { switch_perfect_freehand(); } },
+    calligraphy: { run: function() { switch_calligraphy_mode(); } },
+    text: { run: function() { switch_text_writing_mode(); } },
+    stroke_delete: { run: function() { finishDelete(); switch_stroke_delete_mode(); } },
+    clear: { run: function() { add_clear_marker(); } },
+    toggle_visibility: { run: function() { switch_visibility(); } },
+    small_canvas: { run: function() { switch_small_canvas(); } },
+    play_sound: { run: function() { PlaySound(); } }
+};
+
+// Hold-to-use actions: on while the key is held, off when its key is released.
+var hotkeyHoldActions = {
+    stroke_delete_hold: {
+        down: function() { enter_stroke_delete_mode(); },
+        up: function() { finishDelete(); exit_stroke_delete_mode(); },
+        active: function() { return isDeleting; }
     }
-    // alt + y
-    if ((e.keyCode == 89 || e.keyCode == "y") && e.altKey) {
+};
+
+// Toolbar buttons whose tooltip shows the current binding.
+var hotkeyButtonTitles = [
+    ['ts_visibility_button', 'toggle_visibility', 'Toggle visiblity'],
+    ['ts_perfect_freehand_button', 'perfect_freehand', 'Perfect Freehand'],
+    ['ts_kanji_button', 'calligraphy', 'Toggle calligrapher'],
+    ['ts_text_button', 'text', 'Toggle text writing'],
+    ['ts_stroke_delete_button', 'stroke_delete', 'Stroke Delete'],
+    ['ts_undo_button', 'undo', 'Undo the last stroke'],
+    ['ts_redo_button', 'redo', 'Redo the last stroke'],
+    ['ts_clear_button', 'clear', 'Clean canvas'],
+    ['ts_switch_fullscreen_button', 'small_canvas', 'Toggle fullscreen canvas'],
+    ['ts_switch_pen1_button', 'pen_1', 'Switch to Pen 1'],
+    ['ts_switch_pen2_button', 'pen_2', 'Switch to Pen 2'],
+    ['ts_switch_pen3_button', 'pen_3', 'Switch to Pen 3'],
+    ['ts_switch_pen4_button', 'pen_4', 'Switch to Pen 4'],
+    ['ts_play_sound_button', 'play_sound', 'Play Sound on card again']
+];
+
+var hotkeyBindings = {};
+
+function set_hotkeys(bindings) {
+    hotkeyBindings = {};
+    for (var id in bindings) {
+        hotkeyBindings[id] = AnkiSketchKeys.normalize(bindings[id]);
+    }
+    update_hotkey_titles();
+}
+
+function update_hotkey_titles() {
+    hotkeyButtonTitles.forEach(function(entry) {
+        var button = document.getElementById(entry[0]);
+        if (!button) return;
+        var parts = [];
+        if (hotkeyBindings[entry[1]]) parts.push(hotkeyBindings[entry[1]]);
+        if (entry[1] == 'stroke_delete' && hotkeyBindings.stroke_delete_hold) parts.push('hold ' + hotkeyBindings.stroke_delete_hold);
+        if (entry[1] == 'play_sound' && !parts.length) parts.push('R'); // Anki's own replay key
+        button.title = entry[2] + (parts.length ? ' (' + parts.join(', ') + ')' : '');
+    });
+}
+
+// Plain keys (no Ctrl/Alt/Meta) are left alone while typing in a text field,
+// e.g. the text tool's box or Anki's type-in-the-answer field.
+function hotkey_blocked_by_typing(e, binding) {
+    return AnkiSketchKeys.isTypingTarget(e.target) && !AnkiSketchKeys.hasCommandModifier(binding);
+}
+
+function on_hotkey_down(e) {
+    var combo = AnkiSketchKeys.comboFromEvent(e);
+    if (!combo) return;
+    for (var holdId in hotkeyHoldActions) {
+        if (hotkeyBindings[holdId] !== combo) continue;
+        if (textWriting || hotkey_blocked_by_typing(e, combo)) continue;
         e.preventDefault();
-        ts_redo();
+        if (!e.repeat) hotkeyHoldActions[holdId].down();
+        return;
     }
-    // /
-    if (e.key === ".") {
-        add_clear_marker();
-    }
-	// ,
-    if (e.key === ",") {
-        switch_visibility();
-    }
-    if ((e.keyCode == 84 || e.key == "t") && e.altKey) {
+    for (var id in hotkeyActions) {
+        if (hotkeyBindings[id] !== combo) continue;
+        if (hotkey_blocked_by_typing(e, combo)) continue;
         e.preventDefault();
-        switch_text_writing_mode();
+        if (e.repeat && !hotkeyActions[id].repeat) return;
+        hotkeyActions[id].run();
+        return;
     }
-    if ((e.keyCode == 68 || e.key == "d") && e.altKey) {
-        e.preventDefault();
-        finishDelete()
-        switch_stroke_delete_mode();
+}
+
+function on_hotkey_up(e) {
+    var key = AnkiSketchKeys.keyName(e);
+    if (!key) return;
+    for (var holdId in hotkeyHoldActions) {
+        var hold = hotkeyHoldActions[holdId];
+        if (hotkeyBindings[holdId] && AnkiSketchKeys.mainKey(hotkeyBindings[holdId]) === key && hold.active()) {
+            hold.up();
+        }
     }
-    // alt + c
-    if ((e.keyCode === 67 || e.key === "c") && e.altKey) {
-        e.preventDefault();
-        switch_calligraphy_mode();
-    }
-        // alt + x
-    if ((e.keyCode === 88 || e.key === "x") && e.altKey) {
-        e.preventDefault();
-        switch_perfect_freehand();
-    }
-    // alt + b
-    if ((e.keyCode === 66 || e.key === "b") && e.altKey) {
-        e.preventDefault();
-        switch_small_canvas();
-    }
-        // alt + 1
-    if ((e.keyCode === 49 || e.key === "1") && e.altKey) {
-        e.preventDefault();
-        activate_pen1();
-    }
-        // alt + 2
-    if ((e.keyCode === 50 || e.key === "2") && e.altKey) {
-        e.preventDefault();
-        activate_pen2();
-    }
-        // alt + 3
-    if ((e.keyCode === 51 || e.key === "3") && e.altKey) {
-        e.preventDefault();
-        activate_pen3();
-    }
-        // alt + 4
-    if ((e.keyCode === 52 || e.key === "4") && e.altKey) {
-        e.preventDefault();
-        activate_pen4();
-    }
-})
+}
+
+document.addEventListener('keydown', on_hotkey_down);
+document.addEventListener('keyup', on_hotkey_up);
+set_hotkeys(window.AnkiSketchConfig.hotkeys || {});
 
 // ----------------------------------------- Stroke Delete -----------------------------------------
 

@@ -105,3 +105,7 @@ venv.bak/
 /.vscode/*
 .DS_Store
 AnkiDraw.zip
+
+# Anki writes these into the add-on folder (dev install via junction)
+AnkiSketch/meta.json
+AnkiSketch/user_files/

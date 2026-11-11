@@ -1,0 +1,70 @@
+/*
+ * AnkiSketch — drawing layer styles. Fork of AnkiDraw by Rytisgit. GPL-3.0-or-later.
+ * Values that depend on settings are CSS variables set inline by __init__.py
+ * (see sketch_root_css): --button-bar-*, --small-canvas-*, --background-color,
+ * --ts-bar-display, --ts-bar-autohide-display, --ts-nopointer-cursor.
+ */
+body {
+  overflow-x: hidden; /* Hide horizontal scrollbar */
+}
+/*
+    canvas needs touch-action: none so that it doesn't fire bogus
+    pointercancel events. See:
+    https://stackoverflow.com/questions/59010779/pointer-event-issue-pointercancel-with-pressure-input-pen
+*/
+#main_canvas, #secondary_canvas {
+   z-index: 998;/* add toggle?*/
+  touch-action: none;/*add toggle*/
+  
+  position:var(--canvas-bar-position);
+  top: var(--canvas-bar-pt);
+  right: var(--canvas-bar-pr);
+  bottom: var(--canvas-bar-pb);
+  left: var(--canvas-bar-pl);
+  }
+  #canvas_wrapper, #secondary_canvas {
+   z-index: 999;
+  }
+#main_canvas, #secondary_canvas {
+  background: var(--background-color);
+  border-style: none;
+  border-width: 1px;
+}
+#pencil_button_bar {
+  position: fixed;
+  display: var(--ts-bar-display);
+  flex-direction: var(--button-bar-orientation);
+  opacity: .5;
+  top: var(--button-bar-pt);
+  right: var(--button-bar-pr);
+  bottom: var(--button-bar-pb);
+  left: var(--button-bar-pl);
+  z-index: 8000;
+  transition: .5s;
+} #pencil_button_bar:hover { 
+  opacity: 1;
+} #pencil_button_bar > button {
+  margin: 2px;
+} #pencil_button_bar > button > svg {
+  width: 2em;
+} #pencil_button_bar > button:hover > svg {
+  filter: drop-shadow(0 0 4px #000);
+} #pencil_button_bar > button.active > svg > path {
+  stroke: #000;
+} .night_mode #pencil_button_bar > button.active > svg > path {
+  stroke: #eee;
+} #pencil_button_bar > button > svg > path {
+  stroke: #888;
+} .night_mode #pencil_button_bar > button > svg > path {
+  /*stroke: #888;*/
+}
+.nopointer {
+  cursor: var(--ts-nopointer-cursor) !important;
+} 
+.touch_disable > button:not(:first-child){
+    display: none;
+}
+.nopointer #pencil_button_bar
+{
+  display: var(--ts-bar-autohide-display);
+}

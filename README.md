@@ -1,4 +1,29 @@
-# Anki-StylusDraw
+# AnkiSketch
+
+Draw directly on the card during Anki review, with a stylus or mouse. Aiming for OneNote-like control:
+rebindable hotkeys, more pens, lasso selection, and selecting the card's text without turning drawing off.
+
+**Fork of [AnkiDraw / Anki-StylusDraw](https://github.com/Rytisgit/Anki-StylusDraw) by Rytisgit** (AnkiWeb 1868980340),
+which is based on Anki-TouchScreen by Michal Krassowski. Licensed GPL-3.0, same as upstream (see `LICENSE`).
+
+## Layout
+- `AnkiSketch/` is the add-on folder.
+  - `__init__.py`: menu, settings, injection into the reviewer (`gui_hooks.webview_will_set_content`).
+  - `web/canvas.html`, `web/sketch.css`, `web/sketch.js`: toolbar, styles and drawing logic, served via `setWebExports`.
+  - `web/Caligrapher.js`, `web/PerfectFreehand.js`: stroke libraries (unchanged from upstream).
+
+## Dev install (Windows)
+Link the repo's `AnkiSketch` folder into Anki's add-ons folder with a directory junction, so edits show up after an Anki restart:
+`mklink /J "%APPDATA%\Anki2\addons21\AnkiSketch" "<repo>\AnkiSketch"`.
+Disable AnkiDraw while AnkiSketch is enabled: both add the same JavaScript names to the reviewer.
+
+Settings are stored per profile under `anki_sketch.*` keys. On first run AnkiSketch starts from AnkiDraw's saved settings, if any;
+after that the two are independent.
+
+---
+
+# Upstream README (AnkiDraw)
+
 Initially based on the Anki-TouchScreen addon, updated ui and added pressure pen/stylus capabilities, perfect freehand(line smoothing) and calligrapher functionality.
 
 Website to test the drawing functionality: https://rytisgit.github.io/Anki-StylusDraw/

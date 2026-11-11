@@ -11,10 +11,17 @@
         "text": "Alt+T",
         "stroke_delete": "Alt+D",
         "stroke_delete_hold": "Shift+D",
+        "select": "Alt+S",
+        "delete_selection": "Delete",
         "clear": ".",
         "toggle_visibility": ",",
         "small_canvas": "Alt+B",
-        "play_sound": "",
         "toggle_addon": "Ctrl+R"
+    },
+    "pointer_buttons": {
+        "left": "tool",
+        "right": "select",
+        "middle": "stroke_delete",
+        "pen_eraser": "stroke_delete"
     }
 }

@@ -5,11 +5,15 @@
  *   bindings: {id: "Alt+Z", ...}   current
  *   defaults: {id: "Alt+Z", ...}
  *   ankiKeys: ["Space", "E", ...]  keys Anki itself uses
- * Sends pycmd("ankisketch_hotkeys:save:" + JSON) or pycmd("ankisketch_hotkeys:cancel").
+ *   pointerButtons:    [{id, label}]   left / right / middle / pen_eraser
+ *   pointerBehaviours: [{id, label}]   tool / select / stroke_delete / none
+ *   pointer, pointerDefaults: {button: behaviour}
+ * Sends pycmd("ankisketch_hotkeys:save:" + JSON of {hotkeys, pointer})
+ * or pycmd("ankisketch_hotkeys:cancel").
  * GPL-3.0-or-later.
  */
 (function () {
-    var data, bindings, capturingId = null;
+    var data, bindings, pointer, capturingId = null;
 
     function el(tag, attrs, children) {
         var node = document.createElement(tag);
@@ -74,16 +78,32 @@
                 ])
             ]);
         });
+        var pointerRows = data.pointerButtons.map(function (b) {
+            var select = el('select', { id: 'pointer_' + b.id, onchange: function (ev) { pointer[b.id] = ev.target.value; } },
+                data.pointerBehaviours.map(function (beh) {
+                    var opt = el('option', { value: beh.id, text: beh.label });
+                    if (pointer[b.id] === beh.id) opt.selected = true;
+                    return opt;
+                }));
+            return el('tr', {}, [el('td', { class: 'label', text: b.label }), el('td', {}, [select])]);
+        });
         var app = document.getElementById('app');
         app.innerHTML = '';
+        app.appendChild(el('h1', { text: 'Buttons' }));
+        app.appendChild(el('p', { class: 'intro', text: 'What each button does when you press it on the drawing. Stroke delete lasts while the button is held.' }));
+        app.appendChild(el('table', {}, [el('tbody', {}, pointerRows)]));
+        app.appendChild(el('h1', { text: 'Hotkeys' }));
+        app.appendChild(el('p', { class: 'intro', text: 'Click a key, then press the combination you want. Hotkeys fire on key press.' }));
         app.appendChild(el('table', {}, [el('tbody', {}, rows)]));
         var save = el('button', { id: 'save', class: 'primary', text: 'Save', onclick: function () {
-            pycmd('ankisketch_hotkeys:save:' + JSON.stringify(bindings));
+            pycmd('ankisketch_hotkeys:save:' + JSON.stringify({ hotkeys: bindings, pointer: pointer }));
         } });
         if (anyDuplicate) { save.disabled = true; save.title = 'Two actions share a key; change one first'; }
         app.appendChild(el('div', { class: 'footer' }, [
             el('button', { id: 'reset_all', text: 'Reset all to defaults', onclick: function () {
-                bindings = JSON.parse(JSON.stringify(data.defaults)); capturingId = null; render();
+                bindings = JSON.parse(JSON.stringify(data.defaults));
+                pointer = JSON.parse(JSON.stringify(data.pointerDefaults));
+                capturingId = null; render();
             } }),
             el('span', { class: 'spacer' }),
             el('button', { id: 'cancel', text: 'Cancel', onclick: function () { pycmd('ankisketch_hotkeys:cancel'); } }),
@@ -121,6 +141,7 @@
         bindings = {};
         data.actions.forEach(function (a) { bindings[a.id] = AnkiSketchKeys.normalize(data.bindings[a.id] || ''); });
         data.ankiKeys = data.ankiKeys.map(AnkiSketchKeys.normalize);
+        pointer = JSON.parse(JSON.stringify(data.pointer));
         document.addEventListener('keydown', onKeyDown, true);
         render();
     }

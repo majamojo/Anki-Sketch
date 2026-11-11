@@ -6,7 +6,15 @@ body {
 }
 h1 {
   font-size: 16px;
-  margin: 0 0 4px;
+  margin: 16px 0 4px;
+}
+h1:first-child {
+  margin-top: 0;
+}
+select {
+  font: inherit;
+  padding: 3px 6px;
+  min-width: 13em;
 }
 p.intro {
   margin: 0 0 12px;

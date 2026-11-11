@@ -45,6 +45,7 @@ from aqt.webview import AnkiWebView
 from aqt.qt import QAction, QMenu, QColorDialog, QMessageBox, QInputDialog, QLabel,\
    QPushButton, QDialog, QVBoxLayout, QComboBox, QHBoxLayout, QSpinBox, QCheckBox, QFontDialog, QFont
 from aqt.qt import QKeySequence,QColor
+from aqt.qt import Qt, QGridLayout, QDoubleSpinBox, QDialogButtonBox
 from aqt.qt import pyqtSlot as slot
 
 ADDON_DIR = Path(__file__).parent
@@ -76,10 +77,11 @@ HOTKEY_ACTIONS = [
     ("text", "Text mode", False),
     ("stroke_delete", "Stroke delete mode", False),
     ("stroke_delete_hold", "Stroke delete (hold)", True),
+    ("select", "Select tool (lasso)", False),
+    ("delete_selection", "Delete selection", False),
     ("clear", "Clear drawing", False),
     ("toggle_visibility", "Hide / show drawing", False),
     ("small_canvas", "Small / full canvas", False),
-    ("play_sound", "Replay card audio", False),
     ("toggle_addon", "Turn AnkiSketch on / off", False),
 ]
 HOTKEY_IDS = [a[0] for a in HOTKEY_ACTIONS]
@@ -147,6 +149,45 @@ def apply_hotkeys():
     if mw.state == "review" and ts_state_on:
         execute_js(f"if (typeof set_hotkeys === 'function') {{ set_hotkeys({json_for_script(js_hotkeys(bindings))}); }}")
 
+# What each pointer button does; edited in the same dialog as hotkeys.
+POINTER_BUTTONS = [
+    ("left", "Left button / pen tip"),
+    ("right", "Right button / pen side button"),
+    ("middle", "Middle button"),
+    ("pen_eraser", "Pen eraser end"),
+]
+POINTER_BEHAVIOURS = [
+    ("tool", "Draw (current tool)"),
+    ("select", "Select (lasso)"),
+    ("stroke_delete", "Stroke delete"),
+    ("none", "Nothing"),
+]
+
+def pointer_defaults():
+    defaults = mw.addonManager.addonConfigDefaults(ADDON_PACKAGE) or {}
+    return dict(defaults.get("pointer_buttons") or {})
+
+def pointer_bindings():
+    bindings = pointer_defaults()
+    conf = mw.addonManager.getConfig(__name__) or {}
+    valid = {b[0] for b in POINTER_BEHAVIOURS}
+    for key, value in (conf.get("pointer_buttons") or {}).items():
+        if key in bindings and value in valid:
+            bindings[key] = value
+    return bindings
+
+def save_pointer_bindings(bindings):
+    conf = mw.addonManager.getConfig(__name__) or {}
+    valid = {b[0] for b in POINTER_BEHAVIOURS}
+    current = pointer_bindings()
+    conf["pointer_buttons"] = {
+        key: (bindings.get(key) if bindings.get(key) in valid else current.get(key, "tool"))
+        for key, _label in POINTER_BUTTONS
+    }
+    mw.addonManager.writeConfig(__name__, conf)
+    if mw.state == "review" and ts_state_on:
+        execute_js(f"if (typeof set_pointer_bindings === 'function') {{ set_pointer_bindings({json_for_script(pointer_bindings())}); }}")
+
 def js_hotkeys(bindings):
     return {key: value for key, value in bindings.items() if key not in QT_HOTKEY_IDS}
 
@@ -184,6 +225,7 @@ saved_value_defaults = {
     'ts_font_size': 20,
     'ts_font_bold': False,
     'ts_font_italic': False,
+    'ts_keep_drawings': False,
 }
 
 # Create the variables in the global scope
@@ -219,6 +261,7 @@ def ts_load():
     ts_menu_zen_mode.setChecked(ts_zen_mode)
     ts_menu_follow.setChecked(ts_follow)
     ts_menu_pressure.setChecked(ts_pressure_sensitivity)
+    ts_menu_keep_drawings.setChecked(ts_keep_drawings)
     if ts_state_on:
         ts_on()
 
@@ -229,9 +272,13 @@ def execute_js(code):
 def resize_js():
     execute_js("if (typeof resize === 'function') { setTimeout(resize, 101); }");
     
-def clear_blackboard():
+def clear_blackboard(card=None):
     if ts_state_on:
-        execute_js("if (typeof clear_canvas === 'function') { clear_canvas(); }")
+        if card is not None:
+            keep = "true" if ts_keep_drawings else "false"
+            execute_js(f"if (typeof ankisketch_show_card === 'function') {{ ankisketch_show_card({int(card.id)}, {keep}); }}")
+        else:
+            execute_js("if (typeof clear_canvas === 'function') { clear_canvas(); }")
         # is qFade the reason for having to wait?
         execute_js("if (typeof resize === 'function') { setTimeout(resize, 101); }");
 
@@ -320,6 +367,7 @@ def sketch_js_config():
     return {
         "settings": {
             "pressureSensitivity": bool(ts_pressure_sensitivity),
+            "autoHidePointer": bool(ts_auto_hide_pointer),
             "smallCanvas": bool(ts_default_small_canvas),
             "follow": bool(ts_follow),
             "pens": [
@@ -338,6 +386,7 @@ def sketch_js_config():
             },
         },
         "hotkeys": js_hotkeys(hotkey_bindings()),
+        "pointer": pointer_bindings(),
     }
 
 def json_for_script(value):
@@ -369,8 +418,8 @@ class HotkeyDialog(QDialog):
     """
     def __init__(self, parent=None):
         super().__init__(parent or mw)
-        self.setWindowTitle("AnkiSketch Hotkeys")
-        self.resize(620, 680)
+        self.setWindowTitle("AnkiSketch Hotkeys and Buttons")
+        self.resize(640, 820)
         self.web = AnkiWebView(parent=self, title="AnkiSketch hotkeys")
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -385,10 +434,12 @@ class HotkeyDialog(QDialog):
             "bindings": hotkey_bindings(),
             "defaults": hotkey_defaults(),
             "ankiKeys": ANKI_KEYS,
+            "pointerButtons": [{"id": k, "label": label} for k, label in POINTER_BUTTONS],
+            "pointerBehaviours": [{"id": k, "label": label} for k, label in POINTER_BEHAVIOURS],
+            "pointer": pointer_bindings(),
+            "pointerDefaults": pointer_defaults(),
         }
         body = (
-            "<h1>AnkiSketch hotkeys</h1>"
-            "<p class=intro>Click a key, then press the combination you want. Hotkeys fire on key press.</p>"
             "<div id=app></div>"
             f"<script>window.AnkiSketchHotkeyDialog = {json_for_script(payload)};</script>"
         )
@@ -404,9 +455,11 @@ class HotkeyDialog(QDialog):
             return
         cmd = cmd[len(HOTKEY_DIALOG_CMD):]
         if cmd.startswith("save:"):
-            bindings = json.loads(cmd[len("save:"):])
-            if isinstance(bindings, dict):
-                save_hotkey_bindings({k: v for k, v in bindings.items() if k in HOTKEY_IDS and isinstance(v, str)})
+            data = json.loads(cmd[len("save:"):])
+            if isinstance(data, dict):
+                hotkeys = data.get("hotkeys") or {}
+                save_hotkey_bindings({k: v for k, v in hotkeys.items() if k in HOTKEY_IDS and isinstance(v, str)})
+                save_pointer_bindings(data.get("pointer") or {})
             self.accept()
         elif cmd == "cancel":
             self.reject()
@@ -457,58 +510,85 @@ def ts_change_font_settings():
         
         execute_js("if (typeof ts_redraw === 'function') { ts_redraw(); }")
 
-@slot()
-def ts_change_pen_color(pen_number):
+def ts_set_pen(pen_number, color=None, width=None, opacity=None):
     """
-    Open color picker and set chosen color for the specified pen.
+    Change one pen and apply it to the open reviewer straight away.
+    Only new strokes use it; what's already drawn keeps its own style.
     """
-    # Get current color from global variable
-    current_color = globals()[f"ts_pen{pen_number}_color"]
-    qcolor_old = QColor(current_color)
-    qcolor = QColorDialog.getColor(qcolor_old)
-    
-    if qcolor.isValid():
-        # Update the global variable
-        globals()[f"ts_pen{pen_number}_color"] = qcolor.name()
-        
-        # Reload the reviewer to apply the new color
-        execute_js(f"pen{pen_number}Color = '{qcolor.name()}';")
-        execute_js("if (typeof update_pen_settings === 'function') { update_pen_settings(); }")
+    js = []
+    if color is not None:
+        globals()[f"ts_pen{pen_number}_color"] = color
+        js.append(f"pen{pen_number}Color = {json.dumps(color)};")
+    if width is not None:
+        globals()[f"ts_pen{pen_number}_width"] = float(width)
+        js.append(f"pen{pen_number}Width = {float(width)};")
+    if opacity is not None:
+        globals()[f"ts_pen{pen_number}_opacity"] = float(opacity)
+        js.append(f"pen{pen_number}Opacity = {float(opacity)};")
+    if mw.state == "review" and ts_state_on and js:
+        execute_js("".join(js) + " if (typeof update_pen_settings === 'function') { update_pen_settings(); }")
+
+class PenDialog(QDialog):
+    """
+    Pens 1-4 in one window: colour, width and opacity per pen.
+    Changes apply as you make them.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent or mw)
+        self.setWindowTitle("AnkiSketch Pens")
+        grid = QGridLayout()
+        for col, text in enumerate(["", "Colour", "Width", "Opacity"]):
+            grid.addWidget(QLabel(f"<b>{text}</b>"), 0, col)
+        self.color_buttons = {}
+        for n in range(1, 5):
+            row = n
+            grid.addWidget(QLabel(f"Pen {n}"), row, 0)
+
+            color_button = QPushButton()
+            color_button.setMinimumWidth(90)
+            color_button.clicked.connect(lambda _checked=False, n=n: self.pick_color(n))
+            self.color_buttons[n] = color_button
+            self.show_color(n)
+            grid.addWidget(color_button, row, 1)
+
+            width = QDoubleSpinBox()
+            width.setRange(0.5, 200)
+            width.setDecimals(1)
+            width.setSingleStep(0.5)
+            width.setValue(float(globals()[f"ts_pen{n}_width"]))
+            width.valueChanged.connect(lambda value, n=n: ts_set_pen(n, width=value))
+            grid.addWidget(width, row, 2)
+
+            opacity = QDoubleSpinBox()
+            opacity.setRange(0, 1)
+            opacity.setDecimals(2)
+            opacity.setSingleStep(0.05)
+            opacity.setValue(float(globals()[f"ts_pen{n}_opacity"]))
+            opacity.valueChanged.connect(lambda value, n=n: ts_set_pen(n, opacity=value))
+            grid.addWidget(opacity, row, 3)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout()
+        layout.addLayout(grid)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+    def show_color(self, n):
+        color = globals()[f"ts_pen{n}_color"]
+        self.color_buttons[n].setText(color)
+        text_color = "#000" if QColor(color).lightness() > 128 else "#fff"
+        self.color_buttons[n].setStyleSheet(f"background-color: {color}; color: {text_color};")
+
+    def pick_color(self, n):
+        qcolor = QColorDialog.getColor(QColor(globals()[f"ts_pen{n}_color"]), self)
+        if qcolor.isValid():
+            ts_set_pen(n, color=qcolor.name())
+            self.show_color(n)
 
 @slot()
-def ts_change_pen_width(pen_number):
-    """
-    Open width picker and set chosen width for the specified pen.
-    """
-    # Get current width from global variable
-    current_width = globals()[f"ts_pen{pen_number}_width"]
-    value, accepted = QInputDialog.getDouble(mw, "AnkiSketch", f"Enter the pen {pen_number} width:", current_width)
-    
-    if accepted:
-        # Update the global variable
-        globals()[f"ts_pen{pen_number}_width"] = value
-        
-        # Reload the reviewer to apply the new width
-        execute_js(f"pen{pen_number}Width = '{value}';")
-        execute_js("if (typeof update_pen_settings === 'function') { update_pen_settings(); }")
-
-@slot()
-def ts_change_pen_opacity(pen_number):
-    """
-    Open opacity picker and set chosen opacity for the specified pen.
-    """
-    # Get current opacity from global variable
-    current_opacity = globals()[f"ts_pen{pen_number}_opacity"]
-    value, accepted = QInputDialog.getDouble(mw, "AnkiSketch", f"Enter the pen {pen_number} opacity (0-1):", current_opacity, 0, 1, 2)
-    
-    if accepted:
-        # Update the global variable
-        globals()[f"ts_pen{pen_number}_opacity"] = value
-        
-        # Reload the reviewer to apply the new opacity
-        execute_js(f"pen{pen_number}Opacity = '{value}';")
-        execute_js("if (typeof update_pen_settings === 'function') { update_pen_settings(); }")
-        execute_js("if (typeof ts_redraw === 'function') { ts_redraw(); }")
+def ts_open_pen_dialog():
+    PenDialog(mw).exec()
 
 class CustomDialog(QDialog):
     def __init__(self):
@@ -710,6 +790,14 @@ def ts_change_auto_hide_pointer_settings():
     ts_switch()
     ts_switch()
 
+@slot()
+def ts_change_keep_drawings_settings():
+    """
+    Switch keeping each card's drawing while reviewing.
+    """
+    global ts_keep_drawings
+    ts_keep_drawings = not ts_keep_drawings
+
 def checkProfile():
     if not ts_profile_loaded:
         showWarning("No profile loaded. AnkiSketch may not work correctly.")
@@ -755,59 +843,55 @@ def ts_switch():
     elif mw.state == "overview":
         mw.overview.refresh()
 
+class StickyMenu(QMenu):
+    """
+    Menu whose on/off items toggle without closing it, so several can be
+    changed in one go. Items that open a window still close the menu.
+    """
+    def _toggle_active(self):
+        action = self.activeAction()
+        if action is not None and action.isEnabled() and action.isCheckable() and action.menu() is None:
+            action.trigger()
+            return True
+        return False
+
+    def mouseReleaseEvent(self, event):
+        if self._toggle_active():
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space) and self._toggle_active():
+            return
+        super().keyPressEvent(event)
+
 def ts_setup_menu():
     """
     Initialize menu. 
     """
-    global ts_menu_switch, ts_menu_auto_hide, ts_menu_auto_hide_pointer, ts_menu_small_default, ts_menu_zen_mode, ts_menu_follow, ts_menu_pressure
+    global ts_menu_switch, ts_menu_auto_hide, ts_menu_auto_hide_pointer, ts_menu_small_default, ts_menu_zen_mode, ts_menu_follow, ts_menu_pressure, ts_menu_keep_drawings
 
     # Own menu (AnkiDraw uses mw.addon_view_menu; keep separate so both can be installed).
-    menu = QMenu("""Anki&Sketch""", mw)
+    menu = StickyMenu("""&AnkiSketch""", mw)
     mw.anki_sketch_menu = menu
     mw.form.menubar.insertMenu(mw.form.menuTools.menuAction(), menu)
 
     ts_menu_switch = QAction("""&Enable AnkiSketch""", mw, checkable=True)
     ts_menu_pressure = QAction("""Enable &pressure sensitivity""", mw, checkable=True)
     ts_menu_auto_hide = QAction("""Auto &hide toolbar when drawing""", mw, checkable=True)
-    ts_menu_auto_hide_pointer = QAction("""Auto &hide pointer when drawing""", mw, checkable=True)
+    ts_menu_auto_hide_pointer = QAction("""Auto hide &pointer when drawing""", mw, checkable=True)
     ts_menu_follow = QAction("""&Follow when scrolling (speedup draw)""", mw, checkable=True)
     ts_menu_small_default = QAction("""&Small Canvas by default (speedup draw)""", mw, checkable=True)
     ts_menu_zen_mode = QAction("""Enable Zen Mode(hide toolbar until disabled)""", mw, checkable=True)
-    ts_toolbar_settings = QAction("""&Toolbar and canvas location settings""", mw)
-    ts_font_settings = QAction("""Select &Font for text writing""", mw)    
+    ts_menu_keep_drawings = QAction("""&Keep drawings while reviewing""", mw, checkable=True)
+    ts_menu_keep_drawings.setToolTip("Each card keeps its drawing when you come back to it in the same review session. Leaving the review screen clears them.")
+    ts_pen_settings = QAction("""&Modify pens…""", mw)
+    ts_toolbar_settings = QAction("""&Toolbar and canvas location settings…""", mw)
+    ts_font_settings = QAction("""Select &Font for text writing…""", mw)
+    ts_hotkey_settings = QAction("""&Hotkeys and buttons…""", mw)
 
     ts_menu_switch.setShortcut(qt_key_sequence(hotkey_bindings().get("toggle_addon", "")))
-    ts_hotkey_settings = QAction("""&Hotkeys…""", mw)
-
-    ts_pen_color_menu = QMenu("Set pen 1-4 color", mw)
-    ts_menu_pen1_color = QAction("Set Pen 1 Color", mw)
-    ts_menu_pen2_color = QAction("Set Pen 2 Color", mw)
-    ts_menu_pen3_color = QAction("Set Pen 3 Color", mw)
-    ts_menu_pen4_color = QAction("Set Pen 4 Color", mw)
-    ts_pen_color_menu.addAction(ts_menu_pen1_color)
-    ts_pen_color_menu.addAction(ts_menu_pen2_color)
-    ts_pen_color_menu.addAction(ts_menu_pen3_color)
-    ts_pen_color_menu.addAction(ts_menu_pen4_color)
-
-    ts_pen_width_menu = QMenu("Set pen 1-4 width", mw)
-    ts_menu_pen1_width = QAction("Set Pen 1 width", mw)
-    ts_menu_pen2_width = QAction("Set Pen 2 width", mw)
-    ts_menu_pen3_width = QAction("Set Pen 3 width", mw)
-    ts_menu_pen4_width = QAction("Set Pen 4 width", mw)
-    ts_pen_width_menu.addAction(ts_menu_pen1_width)
-    ts_pen_width_menu.addAction(ts_menu_pen2_width)
-    ts_pen_width_menu.addAction(ts_menu_pen3_width)
-    ts_pen_width_menu.addAction(ts_menu_pen4_width)
-
-    ts_pen_opacity_menu = QMenu("Set pen 1-4 opacity", mw)
-    ts_menu_pen1_opacity = QAction("Set Pen 1 Opacity", mw)
-    ts_menu_pen2_opacity = QAction("Set Pen 2 Opacity", mw)
-    ts_menu_pen3_opacity = QAction("Set Pen 3 Opacity", mw)
-    ts_menu_pen4_opacity = QAction("Set Pen 4 Opacity", mw)
-    ts_pen_opacity_menu.addAction(ts_menu_pen1_opacity)
-    ts_pen_opacity_menu.addAction(ts_menu_pen2_opacity)
-    ts_pen_opacity_menu.addAction(ts_menu_pen3_opacity)
-    ts_pen_opacity_menu.addAction(ts_menu_pen4_opacity)
+    menu.setToolTipsVisible(True)
 
     menu.addAction(ts_menu_switch)
     menu.addAction(ts_menu_pressure)
@@ -816,25 +900,13 @@ def ts_setup_menu():
     menu.addAction(ts_menu_follow)
     menu.addAction(ts_menu_small_default)
     menu.addAction(ts_menu_zen_mode)
-    menu.addMenu(ts_pen_color_menu)
-    menu.addMenu(ts_pen_width_menu)
-    menu.addMenu(ts_pen_opacity_menu)
+    menu.addAction(ts_menu_keep_drawings)
+    menu.addSeparator()
+    menu.addAction(ts_pen_settings)
     menu.addAction(ts_toolbar_settings)
     menu.addAction(ts_font_settings)
     menu.addAction(ts_hotkey_settings)
 
-    ts_menu_pen1_color.triggered.connect(lambda: ts_change_pen_color(1))
-    ts_menu_pen2_color.triggered.connect(lambda: ts_change_pen_color(2))
-    ts_menu_pen3_color.triggered.connect(lambda: ts_change_pen_color(3))
-    ts_menu_pen4_color.triggered.connect(lambda: ts_change_pen_color(4))
-    ts_menu_pen1_width.triggered.connect(lambda: ts_change_pen_width(1))
-    ts_menu_pen2_width.triggered.connect(lambda: ts_change_pen_width(2))
-    ts_menu_pen3_width.triggered.connect(lambda: ts_change_pen_width(3))
-    ts_menu_pen4_width.triggered.connect(lambda: ts_change_pen_width(4))
-    ts_menu_pen1_opacity.triggered.connect(lambda: ts_change_pen_opacity(1))
-    ts_menu_pen2_opacity.triggered.connect(lambda: ts_change_pen_opacity(2))
-    ts_menu_pen3_opacity.triggered.connect(lambda: ts_change_pen_opacity(3))
-    ts_menu_pen4_opacity.triggered.connect(lambda: ts_change_pen_opacity(4))
     ts_menu_switch.triggered.connect(ts_switch)
     ts_menu_pressure.triggered.connect(ts_change_pressure_sensitivity_settings)
     ts_menu_auto_hide.triggered.connect(ts_change_auto_hide_settings)
@@ -842,6 +914,8 @@ def ts_setup_menu():
     ts_menu_follow.triggered.connect(ts_change_follow_settings)
     ts_menu_small_default.triggered.connect(ts_change_small_default_settings)
     ts_menu_zen_mode.triggered.connect(ts_change_zen_mode_settings)
+    ts_menu_keep_drawings.triggered.connect(ts_change_keep_drawings_settings)
+    ts_pen_settings.triggered.connect(ts_open_pen_dialog)
     ts_toolbar_settings.triggered.connect(ts_change_toolbar_settings)
     ts_font_settings.triggered.connect(ts_change_font_settings)
     ts_hotkey_settings.triggered.connect(ts_open_hotkey_dialog)
@@ -856,7 +930,7 @@ def ts_onload():
     """
     gui_hooks.profile_will_close.append(ts_save)
     gui_hooks.profile_did_open.append(ts_load)
-    gui_hooks.reviewer_did_show_question.append(lambda card: clear_blackboard())
+    gui_hooks.reviewer_did_show_question.append(clear_blackboard)
     gui_hooks.reviewer_did_show_answer.append(lambda card: resize_js())
     gui_hooks.webview_will_set_content.append(on_webview_will_set_content)
     mw.addonManager.setConfigAction(__name__, ts_open_hotkey_dialog)

@@ -12,7 +12,7 @@ body {
     pointercancel events. See:
     https://stackoverflow.com/questions/59010779/pointer-event-issue-pointercancel-with-pressure-input-pen
 */
-#main_canvas, #secondary_canvas {
+#main_canvas, #secondary_canvas, #selection_canvas {
    z-index: 998;/* add toggle?*/
   touch-action: none;/*add toggle*/
   
@@ -25,6 +25,11 @@ body {
   #canvas_wrapper, #secondary_canvas {
    z-index: 999;
   }
+/* Selection outline sits above the drawing and never takes pointer input. */
+#selection_canvas {
+  z-index: 1000;
+  pointer-events: none;
+}
 #main_canvas, #secondary_canvas {
   background: var(--background-color);
   border-style: none;
@@ -67,4 +72,8 @@ body {
 .nopointer #pencil_button_bar
 {
   display: var(--ts-bar-autohide-display);
+}
+/* Pen-dot cursor is set on the canvases; hide it while drawing when "Auto hide pointer" is on. */
+.ts_autohide_pointer.nopointer canvas {
+  cursor: none !important;
 }

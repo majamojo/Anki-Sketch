@@ -93,6 +93,10 @@ var ts_text_button = document.getElementById('ts_text_button');
 var ts_perfect_freehand_button = document.getElementById('ts_perfect_freehand_button');
 var ts_stroke_delete_button = document.getElementById('ts_stroke_delete_button');
 var ts_switch_fullscreen_button = document.getElementById('ts_switch_fullscreen_button');
+var ts_select_button = document.getElementById('ts_select_button');
+var selection_canvas = document.getElementById('selection_canvas');
+var selection_ctx = selection_canvas.getContext('2d');
+var selectMode = false;     // Select (lasso) tool chosen on the toolbar / by hotkey
 
 
 var ts_visibility_button_path1 = document.querySelector('#ts_visibility_button > svg > path');
@@ -127,10 +131,6 @@ canvas.onselectstart = function() { return false; };
 secondary_canvas.onselectstart = function() { return false; };
 wrapper.onselectstart = function() { return false; };
 
-function PlaySound(){
-    var selectors = document.querySelectorAll(".soundLink, .replaybutton")
-    if (selectors) { selectors[index++ % selectors.length].click(); }
-}
 function recolor_based_on_active_pen()
 {   
     var color = getPenColorAndWidthByIndex(activePenIndex)[0]
@@ -147,24 +147,28 @@ function recolor_based_on_active_pen()
 function activate_pen1()
 {
     activePenIndex = 0
+    recolor_selection_to_active_pen();
     update_pen_settings();
 }
 
 function activate_pen2()
 {
     activePenIndex = 1
+    recolor_selection_to_active_pen();
     update_pen_settings();
 }
 
 function activate_pen3()
 {
     activePenIndex = 2
+    recolor_selection_to_active_pen();
     update_pen_settings();
 }
 
 function activate_pen4()
 {
     activePenIndex = 3
+    recolor_selection_to_active_pen();
     update_pen_settings();
 }
 
@@ -178,6 +182,9 @@ function reset_drawing_modes()
     perfectFreehand = false;
     strokeDelete = false
     textWriting = false;
+    selectMode = false;
+    ts_select_button.className = '';
+    clear_selection();
     reset_to_main_pen_settings()
     ts_redraw()
 }
@@ -190,6 +197,7 @@ calligraphy_activated = false;
 perfectFreehand_activated = false;
 strokeDelete_activated = false
 textWriting_activated = false;
+selectMode_activated = false;
 
 function save_drawing_modes_for_delete()
 {
@@ -199,6 +207,9 @@ function save_drawing_modes_for_delete()
     calligraphy_activated = calligraphy
     perfectFreehand_activated = perfectFreehand
     textWriting_activated = textWriting
+    selectMode_activated = selectMode
+    selectMode = false
+    ts_select_button.className = ''
     reset_to_main_pen_settings()
     ts_redraw()
 }
@@ -211,6 +222,8 @@ function restore_drawing_modes_for_delete()
     calligraphy = calligraphy_activated
     perfectFreehand = perfectFreehand_activated
     textWriting = textWriting_activated
+    selectMode = selectMode_activated
+    ts_select_button.className = selectMode ? 'active' : ''
     reset_to_main_pen_settings()
     ts_redraw()
 }
@@ -309,6 +322,15 @@ function exit_stroke_delete_mode()
 }
 
 
+function switch_select_mode()
+{
+    stop_drawing();
+    temp = !selectMode;
+    reset_drawing_modes()
+    selectMode = temp;
+    ts_select_button.className = selectMode ? 'active' : '';
+}
+
 function switch_small_canvas()
 {
     stop_drawing();
@@ -331,6 +353,8 @@ function switch_visibility()
     {
         canvas.style.display='none';
         secondary_canvas.style.display=canvas.style.display;
+        selection_canvas.style.display=canvas.style.display;
+        clear_selection();
         ts_visibility_button.className = '';
         optionBar.className = 'touch_disable';
     }
@@ -338,6 +362,7 @@ function switch_visibility()
     {
         canvas.style.display='block';
         secondary_canvas.style.display=canvas.style.display;
+        selection_canvas.style.display=canvas.style.display;
         ts_visibility_button.className = 'active';
         optionBar.className = '';
     }
@@ -424,6 +449,8 @@ function resize() {
     wrapper.style.width = ctx.canvas.width + 'px';
     secondary_canvas.style.height = canvas.style.height;
     secondary_canvas.style.width = canvas.style.width;
+    selection_canvas.style.height = canvas.style.height;
+    selection_canvas.style.width = canvas.style.width;
     
     /* Increase DOM size and scale */
     ctx.canvas.width *= dpr;
@@ -432,6 +459,10 @@ function resize() {
     secondary_ctx.canvas.width *= dpr;
     secondary_ctx.canvas.height *= dpr;
     secondary_ctx.scale(dpr, dpr);
+    scratch_canvas.width = ctx.canvas.width;
+    scratch_canvas.height = ctx.canvas.height;
+    scratch_ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    resize_selection_canvas(dpr);
     
 	update_pen_settings()
     
@@ -469,7 +500,6 @@ function update_pen_settings(){
     }
     
     if(secondary_canvas.style.opacity != pen[2]) secondary_canvas.style.opacity = pen[2]
-    if(canvas.style.opacity != pen[2]) canvas.style.opacity = pen[2]
     
     recolor_based_on_active_pen()
     ts_redraw()
@@ -494,7 +524,6 @@ function reset_to_main_pen_settings(){
     }
     
     if(secondary_canvas.style.opacity != pen[2]) secondary_canvas.style.opacity = pen[2]
-    if(canvas.style.opacity != pen[2]) canvas.style.opacity = pen[2]
     
 }
 
@@ -529,6 +558,12 @@ function ts_undo(){
                 break;
             case 'T'://Text Writing actions
                 break;
+            case 'M'://Move selection
+                move_actions(poppedAction.indices, -poppedAction.dx, -poppedAction.dy)
+                break;
+            case 'R'://Recolour selection
+                poppedAction.changes.forEach(ch => { set_action_color(ch.index, ch.from) })
+                break;
             default://how did you get here??
                 break;
         }
@@ -538,6 +573,7 @@ function ts_undo(){
     {
         ts_undo_button.className = ""
     }
+    prune_selection()
     ts_redraw()
 }
 function ts_redo() {
@@ -557,10 +593,17 @@ function ts_redo() {
             break;
         case 'X'://Delete Stroke Lines
             break;
+        case 'M'://Move selection
+            move_actions(redoAction.indices, redoAction.dx, redoAction.dy)
+            break;
+        case 'R'://Recolour selection
+            redoAction.changes.forEach(ch => { set_action_color(ch.index, ch.to) })
+            break;
         default://how did you get here??
             break;
     }
     
+    prune_selection()
     ts_redraw();
     if (redoStack.length === 0) {
         ts_redo_button.className = "";
@@ -580,6 +623,7 @@ function clear_canvas()
 {
 	//don't continue to put points into an empty array(pointermove) if clearing while drawing on the canvas
 	stop_drawing();
+    clear_selection();
     reset_history();
     reset_redo()
 	ts_clear();
@@ -589,6 +633,7 @@ function add_clear_marker()
 {
 	//don't continue to put points into an empty array(pointermove) if clearing while drawing on the canvas
 	stop_drawing();
+    clear_selection();
     if(lineHistory.length && lineHistory[lineHistory.length-1].type != 'X')add_action_to_history({ type: 'X'})
 	ts_clear();
 }
@@ -625,6 +670,7 @@ function stop_drawing() {
 }
 
 function start_drawing() {
+    clear_selection()
     submitCurrentText()
     isPointerDown = true;
     reset_redo()
@@ -632,6 +678,7 @@ function start_drawing() {
 
 function draw_last_line_segment() {
     window.requestAnimationFrame(draw_last_line_segment);
+    update_cursor();
     draw_upto_latest_point_async(nextLine, nextPoint, nextStroke);
 }
 
@@ -648,13 +695,6 @@ function all_drawing_finished(i){
     return (lineHistory.length-1 >= i)//the path is complete unless its the last of the array and the pointer is still down
 }
 
-async function draw_path_at_some_point_async(startX, startY, midX, midY, endX, endY, lineWidth) {
-		ctx.beginPath();
-		ctx.moveTo((startX + (midX - startX) / 2), (startY + (midY - startY)/ 2));//midpoint calculation for x and y
-		ctx.quadraticCurveTo(midX, midY, (midX + (endX - midX) / 2), (midY + (endY - midY)/ 2));
-        ctx.lineWidth = lineWidth;
-		ctx.stroke();
-};
 async function draw_secondary_path_at_some_point_async(startX, startY, midX, midY, endX, endY, lineWidth) {
 		secondary_ctx.beginPath();
 		secondary_ctx.moveTo((startX + (midX - startX) / 2), (startY + (midY - startY)/ 2));//midpoint calculation for x and y
@@ -666,111 +706,148 @@ async function draw_secondary_path_at_some_point_async(startX, startY, midX, mid
 var pleaseRedrawEverything = false;
 var fullClear = false;
 
+// ----------------------------------------- Rendering -----------------------------------------
+// Each finished stroke is drawn opaque onto a scratch canvas, then copied onto the
+// main canvas with that stroke's own opacity. This keeps every stroke's opacity
+// (switching pens no longer restyles what's already drawn) without the dark
+// overlap marks that drawing semi-transparent segments directly gives on Windows.
+
+var scratch_canvas = document.createElement('canvas');
+var scratch_ctx = scratch_canvas.getContext('2d');
+
+var DRAWABLE_TYPES = { L: true, P: true, C: true, T: true };
+
+function solid_color(color) {
+    return String(color).replace(/[\d\.]+\)$/g, '1)');
+}
+
+function action_opacity(action) {
+    var o = parseFloat(action.opacity);
+    return isNaN(o) ? 1 : Math.max(0, Math.min(1, o));
+}
+
+// Bounding box of an action in canvas (CSS pixel) coordinates, padded for stroke width.
+function action_bbox(action) {
+    if (action._bbox) return action._bbox;
+    var pts = action.points || [];
+    if (!pts.length) return null;
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, maxW = 0;
+    for (var k = 0; k < pts.length; k++) {
+        var p = pts[k];
+        if (p[0] < minX) minX = p[0];
+        if (p[0] > maxX) maxX = p[0];
+        if (p[1] < minY) minY = p[1];
+        if (p[1] > maxY) maxY = p[1];
+        if (p.length > 3 && p[3] > maxW) maxW = p[3];
+    }
+    var width = parseFloat(action.width) || 1;
+    var pad;
+    switch (action.type) {
+        case 'L': pad = Math.max(maxW, width) / 2 + 2; break;
+        case 'P': pad = width + 2; break;
+        case 'C': pad = width * 3 + 20; break;
+        default: pad = 4;
+    }
+    action._bbox = { x: minX - pad, y: minY - pad, w: (maxX - minX) + 2 * pad, h: (maxY - minY) + 2 * pad };
+    return action._bbox;
+}
+
+function invalidate_action_geometry(i) {
+    var action = lineHistory[i];
+    if (action) delete action._bbox;
+    stroke_cache[i] = null;
+}
+
+// Draw one action, opaque, onto context c.
+function draw_action_on(c, action, i) {
+    var color = solid_color(action.color);
+    c.lineJoin = c.lineCap = 'round';
+    c.strokeStyle = c.fillStyle = color;
+    c.lineWidth = action.width;
+    c.globalCompositeOperation = "source-over";
+    switch (action.type) {
+        case 'C'://Calligraphy
+            var calligraphyStroke = stroke_cache[i] || new Stroke(fitStroke(action.points));
+            stroke_cache[i] = calligraphyStroke;
+            calligraphyStroke.draw(action.width, c);
+            break;
+        case 'L'://Simple Lines
+            var pts = action.points;
+            var q1, q2 = pts[0], q3 = pts[0];
+            for (var j = 0; j < pts.length; j++) {
+                q1 = q2; q2 = q3; q3 = pts[j];
+                c.beginPath();
+                c.moveTo((q1[0] + (q2[0] - q1[0]) / 2), (q1[1] + (q2[1] - q1[1]) / 2));
+                c.quadraticCurveTo(q2[0], q2[1], (q2[0] + (q3[0] - q2[0]) / 2), (q2[1] + (q3[1] - q2[1]) / 2));
+                c.lineWidth = q3[3];
+                c.stroke();
+            }
+            break;
+        case 'P'://Perfect Lines
+            var path = stroke_cache[i] || new Path2D(getFreeDrawSvgPath(action.points, action.width, true));
+            stroke_cache[i] = path;
+            c.fill(path);
+            break;
+        case 'T'://Write Text
+            drawTextFromAction(c, action);
+            break;
+    }
+}
+
+// Draw action i onto the main canvas with its own opacity, shifted by (dx, dy).
+function composite_action(action, i, dx, dy) {
+    var box = action_bbox(action);
+    if (!box) return;
+    var dpr = window.devicePixelRatio || 1;
+    var cw = canvas.width, ch = canvas.height;
+    // Source rectangle in device pixels, clamped to the canvas.
+    var sx = Math.max(0, Math.floor(box.x * dpr)), sy = Math.max(0, Math.floor(box.y * dpr));
+    var ex = Math.min(cw, Math.ceil((box.x + box.w) * dpr)), ey = Math.min(ch, Math.ceil((box.y + box.h) * dpr));
+    if (ex <= sx || ey <= sy) return;
+    scratch_ctx.save();
+    scratch_ctx.setTransform(1, 0, 0, 1, 0, 0);
+    scratch_ctx.clearRect(sx, sy, ex - sx, ey - sy);
+    scratch_ctx.restore();
+    draw_action_on(scratch_ctx, action, i);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = action_opacity(action);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(scratch_canvas, sx, sy, ex - sx, ey - sy,
+                  sx + Math.round((dx || 0) * dpr), sy + Math.round((dy || 0) * dpr), ex - sx, ey - sy);
+    ctx.restore();
+}
+
+// Index of the last clear marker; nothing before it is drawn.
+function last_clear_index() {
+    for (var index = lineHistory.length - 1; index > 0; index--) {
+        if (lineHistory[index].type == 'X') return index;
+    }
+    return 0;
+}
+
 async function draw_upto_latest_point_async(startLine, startPoint, startStroke){
 	var fullRedraw = false;//keep track if this call started a full redraw to unset pleaseRedrawEverything flag later.
 	if (pleaseRedrawEverything) {// erase everything and draw from start
         fullRedraw = true;
         startLine = 0;
-        startPoint = 0;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        ctx.restore();
 	}
-    for (let index = lineHistory.length-1; index > 0; index--) {//go thrught the history in reverse
-        if(lineHistory[index].type == 'X'){// the first clear we find is where we should start from 
-            if(index>startLine)startLine = index // if it's later than what we intend to draw
-            break;
-        }
+    startLine = Math.max(startLine, last_clear_index());
+    for (var i = startLine; i < lineHistory.length; i++) {
+        var actionToDraw = lineHistory[i];
+        if (!actionToDraw.visible || !DRAWABLE_TYPES[actionToDraw.type]) continue;
+        var offset = selection_offset_for(i);
+        composite_action(actionToDraw, i, offset[0], offset[1]);
     }
-    for(var i = startLine; i < lineHistory.length; i++){ //Draw
-        actionToDraw = lineHistory[i]
-        if(!actionToDraw.visible) {
-            nextPoint = 0;
-            continue;
-        }
-
-        update_line_draw_settings(actionToDraw.color, actionToDraw.width, actionToDraw.opacity)
-        switch (actionToDraw.type) {
-            case 'C'://Calligraphy
-                    var calligraphyStroke = !stroke_cache[i] ? new Stroke(fitStroke(actionToDraw.points)) : stroke_cache[i]
-                    stroke_cache[i] = calligraphyStroke
-                    calligraphyStroke.draw(actionToDraw.width, ctx);
-                break;
-            case 'L'://Simple Lines
-                ///0,0,0; 0,0,1; 0,1,2 or x+1,x+2,x+3
-                //take the 2 previous points in addition to current one at the start of the loop.
-                p2 = actionToDraw.points[startPoint > 1 ? startPoint-2 : 0];
-                p3 = actionToDraw.points[startPoint > 0 ? startPoint-1 : 0];
-                for(var j = startPoint; j < actionToDraw.points.length; j++){
-                    nextPoint = j + 1;
-                    p1 = p2;
-                    p2 = p3;
-                    p3 = actionToDraw.points[j];
-                    var save = ctx.strokeStyle
-                    //sadly this doesnt work well with windows, as it leaves circle outlines due to alpha blending, so abandon per stroke opacty dreams
-                    // update_line_draw_settings(get_no_alpha(save), actionToDraw.width, actionToDraw.opacity)
-                    // ctx.globalCompositeOperation = "destination-out";
-                    // draw_path_at_some_point_async(p1[0],p1[1],p2[0],p2[1],p3[0],p3[1],p3[3]);
-
-                    update_line_draw_settings(get_no_alpha(save), actionToDraw.width, actionToDraw.opacity)
-
-                    ctx.globalCompositeOperation = "source-over";
-                    draw_path_at_some_point_async(p1[0],p1[1],p2[0],p2[1],p3[0],p3[1],p3[3]);
-                }
-                
-                break;
-            case 'P'://Perfect Lines
-                var path = !stroke_cache[i] ? new Path2D(getFreeDrawSvgPath(actionToDraw.points, actionToDraw.width, true)) : stroke_cache[i]
-                stroke_cache[i] = path
-                var save = ctx.strokeStyle
-                // update_line_draw_settings(get_no_alpha(save), actionToDraw.width, actionToDraw.opacity)
-                // ctx.globalCompositeOperation = "destination-out";
-                // ctx.fill(path);
-
-                update_line_draw_settings(get_no_alpha(save), actionToDraw.width, actionToDraw.opacity)
-                ctx.globalCompositeOperation = "source-over";
-                ctx.fill(path);
-                break;
-            case 'D'://Delete Stroke Lines
-                break;
-            case 'X'://Clear Screen
-                break;
-            case 'T'://Write Text
-                var save = ctx.strokeStyle
-                // update_line_draw_settings(get_no_alpha(save), actionToDraw.width, actionToDraw.opacity)
-                // ctx.globalCompositeOperation = "destination-out";
-                // drawTextFromAction(ctx, actionToDraw)
-
-                update_line_draw_settings(get_no_alpha(save), actionToDraw.width, actionToDraw.opacity)
-                ctx.globalCompositeOperation = "source-over";
-                drawTextFromAction(ctx, actionToDraw)
-                break;
-            default://how did you get here??
-                break;
-        }
-        //post loop cleanup
-        if(all_drawing_finished(i)){
-            nextLine = lineHistory.length;
-            nextPoint = 0;
-        }
-        else{
-            if(lineHistory.length == 0){
-                nextLine = 0;
-            }
-            else{
-                nextLine = lineHistory.length-1;
-            }
-        }
-    }
-    if(!strokeDelete)reset_to_main_pen_settings()
-    
+    nextLine = lineHistory.length;
+    nextPoint = 0;
 	if (fullRedraw) {//finished full redraw, now can unset redraw all flag so no more full redraws until necessary
         pleaseRedrawEverything = false;
-        fullRedraw = false;
-        nextPoint = lineHistory.length == 0 ? 0 : nextPoint;//reset next point if out of lines
-        nextLine = lineHistory.length == 0 ? 0 : lineHistory.length
-        if(fullClear){// start again from 0.
-            nextLine = 0;
-            fullClear = false;
-        }
+        fullClear = false;
 	}
 }
 
@@ -1124,26 +1201,51 @@ function pointerDownLine(e) {
 function pointerMoveLine(e) {
 	if (!e.isPrimary || calligraphy || strokeDelete || textWriting) { return; }
 	if (e.pointerType[0] != 'p' && drawingWithPressurePenOnly) { return; }
-    var pen = getPenColorAndWidthByIndex(activePenIndex);
     if (isPointerDown) {
-        currentAction.points.push([
-			e.offsetX,
-			e.offsetY,
-            (e.pointerType[0] == 'p' && pressureSensitivity) ? e.pressure : 2,
-			(e.pointerType[0] == 'p' && pressureSensitivity) ? (1.0 + e.pressure * currentAction.width * 2) : currentAction.width]);
+        // Use every pen sample since the last frame (browsers merge them into one
+        // pointermove), so fast strokes keep their shape.
+        var samples = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+        if (!samples.length) samples = [e];
+        var offX = e.offsetX - e.clientX, offY = e.offsetY - e.clientY;
+        var usePressure = e.pointerType[0] == 'p' && pressureSensitivity;
+        for (var k = 0; k < samples.length; k++) {
+            var ev = samples[k];
+            currentAction.points.push([
+                ev.clientX + offX,
+                ev.clientY + offY,
+                usePressure ? ev.pressure : 2,
+                usePressure ? (1.0 + ev.pressure * currentAction.width * 2) : currentAction.width]);
+            if (!perfectFreehand) draw_latest_preview_segment();
+        }
         if(perfectFreehand){
             const box = calculateClearBox(currentAction.points);
             secondary_ctx.clearRect(box.x, box.y, box.width, box.height);
             var path = new Path2D(getFreeDrawSvgPath(currentAction.points, currentAction.width, true)) 
             secondary_ctx.fill(path)
         }
-        else{
-            p1 = currentAction.points.length > 2 ? currentAction.points.length-3 : 0;
-            p2 = currentAction.points.length > 1 ? currentAction.points.length-2 : 0;
-            p3 = currentAction.points.length - 1;
-            draw_secondary_path_at_some_point_async(currentAction.points[p1][0],currentAction.points[p1][1],currentAction.points[p2][0],currentAction.points[p2][1],currentAction.points[p3][0],currentAction.points[p3][1],currentAction.points[p3][3])
+        else {
+            draw_preview_tail();
         }
     }
+}
+
+// Live preview of a simple line: the curve up to the midpoint of the last two points.
+function draw_latest_preview_segment() {
+    var pts = currentAction.points;
+    var a = pts[pts.length > 2 ? pts.length-3 : 0], b = pts[pts.length > 1 ? pts.length-2 : 0], c = pts[pts.length - 1];
+    draw_secondary_path_at_some_point_async(a[0], a[1], b[0], b[1], c[0], c[1], c[3]);
+}
+
+// Straight piece from the last midpoint to the pen, so the preview doesn't trail behind it.
+function draw_preview_tail() {
+    var pts = currentAction.points;
+    if (pts.length < 2) return;
+    var b = pts[pts.length - 2], c = pts[pts.length - 1];
+    secondary_ctx.beginPath();
+    secondary_ctx.moveTo(b[0] + (c[0] - b[0]) / 2, b[1] + (c[1] - b[1]) / 2);
+    secondary_ctx.lineTo(c[0], c[1]);
+    secondary_ctx.lineWidth = c[3];
+    secondary_ctx.stroke();
 }
 
 function pointerUpLine(e) {
@@ -1195,6 +1297,368 @@ function updateVariable() {
 // TODO add toggle to not apply front card to the back one
 // TODO clear history button?
 
+// ----------------------------------------- Selection (lasso) -----------------------------------------
+// Draw a loop around strokes to select them (a stroke is selected when more than
+// half of its points are inside), or click a stroke to select just that one.
+// Then drag inside the dashed box to move, press the delete-selection hotkey to
+// delete, or pick a pen to recolour. Moves, deletes and recolours are undoable.
+
+var selectedIndices = [];   // indices into lineHistory
+var selectionDrag = null;   // {dx, dy} while dragging the selection
+var selectGesture = null;   // {kind: 'lasso'|'move', points, startX, startY, pointerId}
+var SELECT_CLICK_TOLERANCE = 6;
+
+function resize_selection_canvas(dpr) {
+    selection_canvas.width = canvas.width;
+    selection_canvas.height = canvas.height;
+    selection_ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw_selection_overlay();
+}
+
+function selection_offset_for(i) {
+    if (selectionDrag && selectedIndices.indexOf(i) !== -1) return [selectionDrag.dx, selectionDrag.dy];
+    return [0, 0];
+}
+
+function is_selectable(i) {
+    var a = lineHistory[i];
+    return a && a.visible && DRAWABLE_TYPES[a.type] && a.points && a.points.length && i >= last_clear_index();
+}
+
+function clear_selection() {
+    if (!selectedIndices.length && !selectGesture && !selectionDrag) return;
+    selectedIndices = [];
+    selectionDrag = null;
+    selectGesture = null;
+    draw_selection_overlay();
+    ts_redraw();
+}
+
+// Drop selected strokes that no longer exist or are hidden (after undo/redo).
+function prune_selection() {
+    var kept = selectedIndices.filter(is_selectable);
+    if (kept.length !== selectedIndices.length) selectedIndices = kept;
+    draw_selection_overlay();
+}
+
+function selection_bbox() {
+    var box = null;
+    selectedIndices.forEach(function(i) {
+        var b = action_bbox(lineHistory[i]);
+        if (!b) return;
+        if (!box) { box = { x: b.x, y: b.y, x2: b.x + b.w, y2: b.y + b.h }; return; }
+        box.x = Math.min(box.x, b.x); box.y = Math.min(box.y, b.y);
+        box.x2 = Math.max(box.x2, b.x + b.w); box.y2 = Math.max(box.y2, b.y + b.h);
+    });
+    return box;
+}
+
+function point_in_polygon(x, y, poly) {
+    var inside = false;
+    for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+        if (((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+}
+
+function strokes_in_lasso(poly) {
+    var found = [];
+    for (var i = last_clear_index(); i < lineHistory.length; i++) {
+        if (!is_selectable(i)) continue;
+        var pts = lineHistory[i].points, inside = 0;
+        for (var k = 0; k < pts.length; k++) if (point_in_polygon(pts[k][0], pts[k][1], poly)) inside++;
+        if (inside * 2 > pts.length) found.push(i);
+    }
+    return found;
+}
+
+function dist_to_segment(px, py, ax, ay, bx, by) {
+    var dx = bx - ax, dy = by - ay, len = dx * dx + dy * dy;
+    var t = len ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len)) : 0;
+    var cx = ax + t * dx, cy = ay + t * dy;
+    return Math.sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
+}
+
+// Topmost stroke under a click.
+function stroke_at_point(x, y) {
+    for (var i = lineHistory.length - 1; i >= last_clear_index(); i--) {
+        if (!is_selectable(i)) continue;
+        var a = lineHistory[i], pts = a.points;
+        if (a.type == 'T') {
+            var b = action_bbox(a);
+            if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return i;
+            continue;
+        }
+        var tol = Math.max(parseFloat(a.width) || 1, 2) / 2 + SELECT_CLICK_TOLERANCE;
+        if (pts.length == 1 && Math.hypot(pts[0][0] - x, pts[0][1] - y) <= tol) return i;
+        for (var k = 1; k < pts.length; k++) {
+            if (dist_to_segment(x, y, pts[k-1][0], pts[k-1][1], pts[k][0], pts[k][1]) <= tol) return i;
+        }
+    }
+    return -1;
+}
+
+function draw_selection_overlay() {
+    selection_ctx.save();
+    selection_ctx.setTransform(1, 0, 0, 1, 0, 0);
+    selection_ctx.clearRect(0, 0, selection_canvas.width, selection_canvas.height);
+    selection_ctx.restore();
+    selection_ctx.lineWidth = 1.5;
+    selection_ctx.strokeStyle = '#2a7de1';
+    selection_ctx.setLineDash([6, 4]);
+    if (selectGesture && selectGesture.kind == 'lasso' && selectGesture.points.length > 1) {
+        var pts = selectGesture.points;
+        selection_ctx.beginPath();
+        selection_ctx.moveTo(pts[0][0], pts[0][1]);
+        for (var k = 1; k < pts.length; k++) selection_ctx.lineTo(pts[k][0], pts[k][1]);
+        selection_ctx.stroke();
+    }
+    var box = selection_bbox();
+    if (box) {
+        var dx = selectionDrag ? selectionDrag.dx : 0, dy = selectionDrag ? selectionDrag.dy : 0;
+        selection_ctx.fillStyle = 'rgba(42, 125, 225, 0.07)';
+        selection_ctx.fillRect(box.x + dx, box.y + dy, box.x2 - box.x, box.y2 - box.y);
+        selection_ctx.strokeRect(box.x + dx, box.y + dy, box.x2 - box.x, box.y2 - box.y);
+    }
+    selection_ctx.setLineDash([]);
+}
+
+function move_actions(indices, dx, dy) {
+    indices.forEach(function(i) {
+        var a = lineHistory[i];
+        if (!a || !a.points) return;
+        a.points = a.points.map(function(p) { var q = p.slice(); q[0] += dx; q[1] += dy; return q; });
+        if (a.type == 'T') { a.x += dx; a.y += dy; }
+        invalidate_action_geometry(i);
+    });
+}
+
+function set_action_color(i, style) {
+    var a = lineHistory[i];
+    if (!a) return;
+    a.color = style.color;
+    a.opacity = style.opacity;
+}
+
+function delete_selection() {
+    if (!selectedIndices.length) return;
+    var indices = selectedIndices.slice();
+    indices.forEach(function(i) { lineHistory[i].visible = false; });
+    selectedIndices = [];
+    add_action_to_history({ type: 'D', points: [], deletedList: indices, visible: true });
+    draw_selection_overlay();
+    ts_redraw();
+}
+
+function recolor_selection_to_active_pen() {
+    if (!selectedIndices.length) return;
+    var pen = getPenColorAndWidthByIndex(activePenIndex);
+    var changes = selectedIndices.map(function(i) {
+        var a = lineHistory[i];
+        return { index: i, from: { color: a.color, opacity: a.opacity }, to: { color: pen[0], opacity: pen[2] } };
+    });
+    changes.forEach(function(ch) { set_action_color(ch.index, ch.to); });
+    add_action_to_history({ type: 'R', changes: changes, visible: true });
+    ts_redraw();
+}
+
+function select_pointer_down(e) {
+    submitCurrentText();
+    var x = e.offsetX, y = e.offsetY;
+    var box = selection_bbox();
+    var pad = SELECT_CLICK_TOLERANCE;
+    if (box && x >= box.x - pad && x <= box.x2 + pad && y >= box.y - pad && y <= box.y2 + pad) {
+        selectGesture = { kind: 'move', startX: x, startY: y, pointerId: e.pointerId };
+        selectionDrag = { dx: 0, dy: 0 };
+    } else {
+        selectedIndices = [];
+        selectGesture = { kind: 'lasso', points: [[x, y]], pointerId: e.pointerId };
+    }
+    try { secondary_canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    draw_selection_overlay();
+    ts_redraw();
+}
+
+function select_pointer_move(e) {
+    if (!selectGesture || e.pointerId !== selectGesture.pointerId) return;
+    var x = e.offsetX, y = e.offsetY;
+    if (selectGesture.kind == 'lasso') {
+        selectGesture.points.push([x, y]);
+    } else {
+        selectionDrag = { dx: x - selectGesture.startX, dy: y - selectGesture.startY };
+        ts_redraw();
+    }
+    draw_selection_overlay();
+}
+
+function select_pointer_up(e) {
+    if (!selectGesture || e.pointerId !== selectGesture.pointerId) return;
+    var gesture = selectGesture;
+    selectGesture = null;
+    if (gesture.kind == 'lasso') {
+        var pts = gesture.points, extent = 0;
+        for (var k = 1; k < pts.length; k++) extent = Math.max(extent, Math.hypot(pts[k][0] - pts[0][0], pts[k][1] - pts[0][1]));
+        if (extent < SELECT_CLICK_TOLERANCE) {
+            var hit = stroke_at_point(pts[0][0], pts[0][1]);
+            selectedIndices = hit >= 0 ? [hit] : [];
+        } else {
+            selectedIndices = strokes_in_lasso(pts);
+        }
+    } else {
+        var drag = selectionDrag || { dx: 0, dy: 0 };
+        selectionDrag = null;
+        if (drag.dx || drag.dy) {
+            var indices = selectedIndices.slice();
+            move_actions(indices, drag.dx, drag.dy);
+            add_action_to_history({ type: 'M', indices: indices, dx: drag.dx, dy: drag.dy, visible: true });
+        }
+        ts_redraw();
+    }
+    draw_selection_overlay();
+}
+
+// ----------------------------------------- Pointer buttons -----------------------------------------
+// What each pointer button does is set in AnkiSketch > Hotkeys and buttons:
+//   'tool'          use the current tool (pen, calligraphy, text, stroke delete, select)
+//   'select'        lasso select / move the selection
+//   'stroke_delete' stroke delete while the button is held
+//   'none'          nothing (for the right button: Anki's right-click menu)
+
+var POINTER_DEFAULTS = { left: 'tool', right: 'select', middle: 'stroke_delete', pen_eraser: 'stroke_delete' };
+var pointerBindings = Object.assign({}, POINTER_DEFAULTS, window.AnkiSketchConfig.pointer || {});
+var pointerGesture = null;  // {behaviour, tempDelete, pointerId}
+
+function set_pointer_bindings(bindings) {
+    pointerBindings = Object.assign({}, POINTER_DEFAULTS, bindings || {});
+}
+
+function pointer_role(e) {
+    if (e.pointerType === 'pen' && (e.button === 5 || (e.buttons & 32))) return 'pen_eraser';
+    if (e.button === 1) return 'middle';
+    if (e.button === 2) return 'right';
+    return 'left';
+}
+
+function is_drawing_surface(target) {
+    return target === canvas || target === secondary_canvas;
+}
+
+// Runs before the drawing handlers (capture phase) and decides who gets the gesture.
+function route_pointer_down(e) {
+    if (!is_drawing_surface(e.target) || !e.isPrimary) return;
+    var behaviour = pointerBindings[pointer_role(e)] || 'tool';
+    if (behaviour === 'tool' && selectMode) behaviour = 'select';
+    pointerGesture = null;
+    if (behaviour === 'tool') return;
+    if (behaviour === 'none') { e.stopPropagation(); return; }
+    if (behaviour === 'select') {
+        e.stopPropagation();
+        e.preventDefault();
+        if (isPointerDown) stop_drawing();
+        pointerGesture = { behaviour: 'select', pointerId: e.pointerId };
+        select_pointer_down(e);
+        return;
+    }
+    if (behaviour === 'stroke_delete') {
+        pointerGesture = { behaviour: 'stroke_delete', pointerId: e.pointerId, tempDelete: !strokeDelete };
+        if (!strokeDelete) enter_stroke_delete_mode();
+        // fall through to the stroke delete handlers
+    }
+}
+
+function route_pointer_move(e) {
+    if (pointerGesture && pointerGesture.behaviour === 'select') select_pointer_move(e);
+}
+
+// Registered after the drawing handlers' pointerup, so it runs once they're done.
+function route_pointer_up(e) {
+    var gesture = pointerGesture;
+    if (!gesture || e.pointerId !== gesture.pointerId) return;
+    pointerGesture = null;
+    if (gesture.behaviour === 'select') select_pointer_up(e);
+    if (gesture.behaviour === 'stroke_delete' && gesture.tempDelete) exit_stroke_delete_mode();
+}
+
+wrapper.addEventListener('pointerdown', route_pointer_down, true);
+window.addEventListener('pointermove', route_pointer_move);
+window.addEventListener('pointerup', route_pointer_up);
+window.addEventListener('pointercancel', route_pointer_up);
+// No browser right-click menu or middle-click autoscroll on the drawing.
+wrapper.addEventListener('contextmenu', function(e) {
+    if (is_drawing_surface(e.target) && pointerBindings.right !== 'none') e.preventDefault();
+});
+wrapper.addEventListener('mousedown', function(e) {
+    if (is_drawing_surface(e.target) && e.button === 1 && pointerBindings.middle !== 'none') e.preventDefault();
+});
+wrapper.addEventListener('auxclick', function(e) {
+    if (is_drawing_surface(e.target) && e.button === 1) e.preventDefault();
+});
+
+// ----------------------------------------- Cursor -----------------------------------------
+// While drawing is on, the pointer is a dot in the current pen's colour and size.
+
+var cursorKey = '';
+
+function svg_cursor(svg, hotX, hotY, fallback) {
+    return 'url("data:image/svg+xml;utf8,' + encodeURIComponent(svg) + '") ' + hotX + ' ' + hotY + ', ' + fallback;
+}
+
+function pen_dot_cursor(color, width) {
+    var d = Math.max(4, Math.min(40, Math.round(parseFloat(width) || 4)));
+    var size = d + 4, c = size / 2;
+    return svg_cursor("<svg xmlns='http://www.w3.org/2000/svg' width='" + size + "' height='" + size + "'>" +
+        "<circle cx='" + c + "' cy='" + c + "' r='" + (d / 2) + "' fill='" + color + "' stroke='white' stroke-width='1'/></svg>",
+        Math.round(c), Math.round(c), 'crosshair');
+}
+
+function eraser_cursor() {
+    return svg_cursor("<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'>" +
+        "<circle cx='10' cy='10' r='7' fill='white' fill-opacity='0.6' stroke='#d32f2f' stroke-width='2'/></svg>",
+        10, 10, 'crosshair');
+}
+
+function update_cursor() {
+    var pen = getPenColorAndWidthByIndex(activePenIndex);
+    var key = [selectMode, strokeDelete, textWriting, pen[0], pen[1]].join('|');
+    if (key === cursorKey) return;
+    cursorKey = key;
+    var cursor;
+    if (strokeDelete) cursor = eraser_cursor();
+    else if (selectMode) cursor = 'crosshair';
+    else if (textWriting) cursor = 'text';
+    else cursor = pen_dot_cursor(solid_color(pen[0]), pen[1]);
+    canvas.style.cursor = cursor;
+    secondary_canvas.style.cursor = cursor;
+}
+
+if (AnkiSketchSettings.autoHidePointer) wrapper.classList.add('ts_autohide_pointer');
+
+// ----------------------------------------- Keep drawings per card -----------------------------------------
+// With "Keep drawings while reviewing" on, each card's drawing is kept in memory and
+// comes back when that card is shown again. Leaving the review screen clears it all,
+// because Anki reloads this page.
+
+var savedCardDrawings = {};
+var currentCardId = null;
+
+function ankisketch_show_card(cardId, keep) {
+    if (keep && currentCardId !== null && currentCardId !== cardId) {
+        savedCardDrawings[currentCardId] = lineHistory.slice();
+    }
+    var sameCard = currentCardId === cardId;
+    currentCardId = cardId;
+    if (keep && sameCard) return;  // e.g. the page re-showed the same card: keep the drawing
+    clear_canvas();
+    if (keep && savedCardDrawings[cardId]) {
+        lineHistory = savedCardDrawings[cardId];
+        stroke_cache = [];
+        lineHistory.forEach(function(a) { delete a._bbox; });
+        ts_undo_button.className = lineHistory.length ? 'active' : '';
+        ts_redraw();
+    }
+}
+
 // ----------------------------------------- Hotkeys -----------------------------------------
 // Bindings come from config.json via window.AnkiSketchConfig.hotkeys and can be
 // changed in the AnkiSketch > Hotkeys dialog. Actions fire on keydown.
@@ -1214,7 +1678,8 @@ var hotkeyActions = {
     clear: { run: function() { add_clear_marker(); } },
     toggle_visibility: { run: function() { switch_visibility(); } },
     small_canvas: { run: function() { switch_small_canvas(); } },
-    play_sound: { run: function() { PlaySound(); } }
+    select: { run: function() { switch_select_mode(); } },
+    delete_selection: { run: function() { delete_selection(); } }
 };
 
 // Hold-to-use actions: on while the key is held, off when its key is released.
@@ -1233,6 +1698,7 @@ var hotkeyButtonTitles = [
     ['ts_kanji_button', 'calligraphy', 'Toggle calligrapher'],
     ['ts_text_button', 'text', 'Toggle text writing'],
     ['ts_stroke_delete_button', 'stroke_delete', 'Stroke Delete'],
+    ['ts_select_button', 'select', 'Select (lasso)'],
     ['ts_undo_button', 'undo', 'Undo the last stroke'],
     ['ts_redo_button', 'redo', 'Redo the last stroke'],
     ['ts_clear_button', 'clear', 'Clean canvas'],
@@ -1240,8 +1706,7 @@ var hotkeyButtonTitles = [
     ['ts_switch_pen1_button', 'pen_1', 'Switch to Pen 1'],
     ['ts_switch_pen2_button', 'pen_2', 'Switch to Pen 2'],
     ['ts_switch_pen3_button', 'pen_3', 'Switch to Pen 3'],
-    ['ts_switch_pen4_button', 'pen_4', 'Switch to Pen 4'],
-    ['ts_play_sound_button', 'play_sound', 'Play Sound on card again']
+    ['ts_switch_pen4_button', 'pen_4', 'Switch to Pen 4']
 ];
 
 var hotkeyBindings = {};
@@ -1261,7 +1726,6 @@ function update_hotkey_titles() {
         var parts = [];
         if (hotkeyBindings[entry[1]]) parts.push(hotkeyBindings[entry[1]]);
         if (entry[1] == 'stroke_delete' && hotkeyBindings.stroke_delete_hold) parts.push('hold ' + hotkeyBindings.stroke_delete_hold);
-        if (entry[1] == 'play_sound' && !parts.length) parts.push('R'); // Anki's own replay key
         button.title = entry[2] + (parts.length ? ' (' + parts.join(', ') + ')' : '');
     });
 }

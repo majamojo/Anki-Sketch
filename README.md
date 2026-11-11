@@ -19,6 +19,16 @@ Every toolbar action has a rebindable hotkey: **AnkiSketch > Hotkeys…** (or To
 Click an action's key, press the new combination, Save. Hotkeys fire on key press (upstream issue #58).
 Defaults match AnkiDraw; format and action list are in `AnkiSketch/config.md`.
 
+## Selection and buttons
+- Right-drag (or pen side button) draws a lasso: strokes mostly inside it are selected. Right-click a stroke to select just that one.
+- Drag inside the dashed box to move; press Delete to delete; pick a pen to recolour. All undoable.
+- Middle-drag and the pen's eraser end delete strokes while held.
+- What each button does is set in **AnkiSketch > Hotkeys and buttons…**. There's also a Select tool on the toolbar (Alt+S).
+
+## Other options
+- **AnkiSketch > Modify pens…**: colour, width and opacity of pens 1–4 in one window. Each stroke keeps the opacity it was drawn with.
+- **Keep drawings while reviewing** (menu toggle): coming back to a card in the same review session shows its drawing again.
+
 ## Dev install (Windows)
 Link the repo's `AnkiSketch` folder into Anki's add-ons folder with a directory junction, so edits show up after an Anki restart:
 `mklink /J "%APPDATA%\Anki2\addons21\AnkiSketch" "<repo>\AnkiSketch"`.

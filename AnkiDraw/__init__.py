@@ -34,7 +34,7 @@ from anki.lang import _
 from anki.hooks import addHook
 
 from aqt.qt import QAction, QMenu, QColorDialog, QMessageBox, QInputDialog, QLabel,\
-   QPushButton, QDialog, QVBoxLayout, QComboBox, QHBoxLayout, QSpinBox, QCheckBox, QFontDialog, QFont
+   QPushButton, QDialog, QVBoxLayout, QComboBox, QHBoxLayout, QSpinBox, QCheckBox, QFontDialog, QFont, QSlider, Qt
 from aqt.qt import QKeySequence,QColor
 from aqt.qt import pyqtSlot as slot
 
@@ -58,6 +58,7 @@ saved_value_defaults = {
     'ts_zen_mode': False,
     'ts_follow': False,
     'ts_pressure_sensitivity': True,
+    'ts_fixed_pressure': 0.5,
     'ts_orient_vertical': True,
     'ts_y_offset': 2,
     'ts_small_width': 500,
@@ -456,6 +457,7 @@ def blackboard_js():
 var visible = """ + ts_default_VISIBILITY + """;
 var perfectFreehand = """ + ts_default_PerfFreehand +""";
 var pressureSensitivity = """ + str(ts_pressure_sensitivity).lower() + """;
+var fixedPressure = """ + str(ts_fixed_pressure) + """; // pressure used for every stroke when pressureSensitivity is off
 var small_canvas = """ +  str(ts_default_small_canvas).lower() + """;
 var fullscreen_follow = """ + str(ts_follow).lower() + """;
 var calligraphy = """ + ts_default_Calligraphy + """;
@@ -1593,6 +1595,17 @@ function drawTextFromAction(paramCtx, action){
     return lines
 }
 
+// [x, y, pressure, width] for simple and perfect freehand strokes.
+// Pressure > 1 tells perfect freehand to simulate pressure from speed.
+function stroke_point(e, penWidth) {
+    var pressure;
+    if (!pressureSensitivity) pressure = fixedPressure;            // same pressure for every input
+    else if (e.pointerType[0] == 'p') pressure = e.pressure;       // real pen pressure
+    else pressure = 2;                                             // mouse/touch: simulated
+    var width = pressure > 1 ? penWidth : 1.0 + pressure * penWidth * 2;
+    return [e.offsetX, e.offsetY, pressure, width];
+}
+
 function pointerDownLine(e) {
     wrapper.classList.add('nopointer');
 	if (!e.isPrimary || calligraphy || strokeDelete || textWriting || selectMode) { return; }
@@ -1609,11 +1622,7 @@ function pointerDownLine(e) {
             visible: true,
             type: perfectFreehand ? 'P' : 'L', // 'simple', 'perfect'
         };
-        currentAction.points.push([
-			e.offsetX,
-			e.offsetY,
-            (e.pointerType[0] == 'p' && pressureSensitivity) ? e.pressure : 2,//set pressure for perfect draw
-			(e.pointerType[0] == 'p' && pressureSensitivity) ? (1.0 + e.pressure * currentAction.width * 2) : currentAction.width]);//set pressure for simple lines
+        currentAction.points.push(stroke_point(e, currentAction.width));
         if(perfectFreehand){
             const box = calculateClearBox(currentAction.points);
             secondary_ctx.clearRect(box.x, box.y, box.width, box.height);
@@ -1639,11 +1648,7 @@ function pointerMoveLine(e) {
             draw_straight_line_preview();
             return;
         }
-        currentAction.points.push([
-			e.offsetX,
-			e.offsetY,
-            (e.pointerType[0] == 'p' && pressureSensitivity) ? e.pressure : 2,
-			(e.pointerType[0] == 'p' && pressureSensitivity) ? (1.0 + e.pressure * currentAction.width * 2) : currentAction.width]);
+        currentAction.points.push(stroke_point(e, currentAction.width));
         if(perfectFreehand){
             const box = calculateClearBox(currentAction.points);
             secondary_ctx.clearRect(box.x, box.y, box.width, box.height);
@@ -1672,11 +1677,7 @@ function pointerUpLine(e) {
         secondary_ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);//clear the guide line in second canvas
     }
     else if (isPointerDown) {
-        currentAction.points.push([
-			e.offsetX,
-			e.offsetY,
-            (e.pointerType[0] == 'p' && pressureSensitivity) ? e.pressure : 2,
-			(e.pointerType[0] == 'p' && pressureSensitivity) ? (1.0 + e.pressure * currentAction.width * 2) : currentAction.width]);
+        currentAction.points.push(stroke_point(e, currentAction.width));
 
         if(perfectFreehand){
             const box = calculateClearBox(currentAction.points);
@@ -2727,6 +2728,12 @@ def ts_change_zen_mode_settings():
     ts_switch()
     ts_switch()
 
+def ts_apply_pressure_settings():
+    ts_menu_pressure.setChecked(ts_pressure_sensitivity)
+    execute_js("pressureSensitivity = " + str(ts_pressure_sensitivity).lower() + ";")
+    execute_js("fixedPressure = " + str(ts_fixed_pressure) + ";")
+    execute_js("if (typeof resize === 'function') { resize(); }")
+
 @slot()
 def ts_change_pressure_sensitivity_settings():
     """
@@ -2734,8 +2741,67 @@ def ts_change_pressure_sensitivity_settings():
     """
     global ts_pressure_sensitivity
     ts_pressure_sensitivity = not ts_pressure_sensitivity
-    execute_js("pressureSensitivity = " + str(ts_pressure_sensitivity).lower() + ";")
-    execute_js("if (typeof resize === 'function') { resize(); }")
+    ts_apply_pressure_settings()
+
+class PenPressureDialog(QDialog):
+    def __init__(self, pressure_enabled, fixed_pressure):
+        super().__init__(mw)
+        self.setWindowTitle("AnkiDraw Pen Pressure")
+
+        self.pressure_checkbox = QCheckBox("Use pen pressure sensitivity")
+        self.pressure_checkbox.setChecked(pressure_enabled)
+
+        self.slider_label = QLabel()
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(1, 100)
+        self.slider.setValue(round(fixed_pressure * 100))
+
+        self.hint = QLabel("When pressure sensitivity is off, every stroke (pen, mouse or touch) "
+                           "is drawn as if pressed this hard. Higher means thicker lines.")
+        self.hint.setWordWrap(True)
+
+        self.pressure_checkbox.toggled.connect(self.update_state)
+        self.slider.valueChanged.connect(self.update_state)
+
+        accept_button = QPushButton("Accept")
+        cancel_button = QPushButton("Cancel")
+        reset_button = QPushButton("Default")
+        accept_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        reset_button.clicked.connect(self.reset_to_default)
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(accept_button)
+        button_layout.addWidget(reset_button)
+        button_layout.addWidget(cancel_button)
+
+        layout = QVBoxLayout()
+        layout.addWidget(self.pressure_checkbox)
+        layout.addWidget(self.slider_label)
+        layout.addWidget(self.slider)
+        layout.addWidget(self.hint)
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+        self.setMinimumWidth(360)
+        self.update_state()
+
+    def update_state(self):
+        fixed = not self.pressure_checkbox.isChecked()
+        for widget in (self.slider_label, self.slider, self.hint):
+            widget.setEnabled(fixed)
+        self.slider_label.setText(f"Fixed pressure: {self.slider.value()}%")
+
+    def reset_to_default(self):
+        self.pressure_checkbox.setChecked(saved_value_defaults['ts_pressure_sensitivity'])
+        self.slider.setValue(round(saved_value_defaults['ts_fixed_pressure'] * 100))
+
+@slot()
+def ts_change_pen_pressure_settings():
+    global ts_pressure_sensitivity, ts_fixed_pressure
+    dialog = PenPressureDialog(ts_pressure_sensitivity, ts_fixed_pressure)
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        ts_pressure_sensitivity = dialog.pressure_checkbox.isChecked()
+        ts_fixed_pressure = dialog.slider.value() / 100
+        ts_apply_pressure_settings()
     
 @slot()
 def ts_change_auto_hide_pointer_settings():
@@ -2817,6 +2883,7 @@ def ts_setup_menu():
     ts_menu_small_default = QAction("""&Small Canvas by default (speedup draw)""", mw, checkable=True)
     ts_menu_zen_mode = QAction("""Enable Zen Mode(hide toolbar until disabled)""", mw, checkable=True)
     ts_toolbar_settings = QAction("""&Toolbar and canvas location settings""", mw)
+    ts_pressure_settings = QAction("""Pen p&ressure settings...""", mw)
     ts_font_settings = QAction("""Select &Font for text writing""", mw)    
 
     ts_toggle_seq = QKeySequence("Ctrl+r")
@@ -2862,6 +2929,7 @@ def ts_setup_menu():
     mw.addon_view_menu.addMenu(ts_pen_color_menu)
     mw.addon_view_menu.addMenu(ts_pen_width_menu)
     mw.addon_view_menu.addMenu(ts_pen_opacity_menu)
+    mw.addon_view_menu.addAction(ts_pressure_settings)
     mw.addon_view_menu.addAction(ts_toolbar_settings)
     mw.addon_view_menu.addAction(ts_font_settings)
 
@@ -2885,6 +2953,7 @@ def ts_setup_menu():
     ts_menu_small_default.triggered.connect(ts_change_small_default_settings)
     ts_menu_zen_mode.triggered.connect(ts_change_zen_mode_settings)
     ts_toolbar_settings.triggered.connect(ts_change_toolbar_settings)
+    ts_pressure_settings.triggered.connect(ts_change_pen_pressure_settings)
     ts_font_settings.triggered.connect(ts_change_font_settings)
 
 #

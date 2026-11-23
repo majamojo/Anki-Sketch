@@ -449,7 +449,15 @@ body {
 .nopointer {
   cursor: """+get_css_for_auto_hide_pointer(ts_auto_hide_pointer)+""" !important;
 } 
-.touch_disable > button:not(:first-child){
+/* AnkiDraw's own cursor over the canvas (a dot in the pen's colour), set from JS.
+   Not relying on Windows' pen dot, which gets lost after switching windows or reloading. */
+#main_canvas, #secondary_canvas {
+  cursor: var(--ts-canvas-cursor, crosshair);
+}
+""" + (""".nopointer #main_canvas, .nopointer #secondary_canvas {
+  cursor: none !important;
+}
+""" if ts_auto_hide_pointer else "") + """.touch_disable > button:not(:first-child){
     display: none;
 }
 .nopointer #pencil_button_bar
@@ -642,6 +650,7 @@ function recolor_based_on_active_pen()
     ts_switch_pen2_button_path.style.stroke = pen2Color
     ts_switch_pen3_button_path.style.stroke = pen3Color
     ts_switch_pen4_button_path.style.stroke = pen4Color
+    if (typeof update_canvas_cursor === 'function') update_canvas_cursor()
 }
 
 function activate_pen1()
@@ -2661,6 +2670,43 @@ window.addEventListener('pointerdown', spotErasePointerDown, true);
 window.addEventListener('pointermove', spotErasePointerMove, true);
 window.addEventListener('pointerup', spotErasePointerUp, true);
 window.addEventListener('pointercancel', spotErasePointerUp, true);
+
+// ----------------------------------------- Canvas cursor -----------------------------------------
+
+function dot_cursor(color, width) {
+    var d = Math.max(4, Math.min(24, Math.round(width))); // dot diameter, roughly the pen width
+    var size = d + 4, c = Math.floor(size / 2);
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '">' +
+        '<circle cx="' + c + '" cy="' + c + '" r="' + (d / 2) + '" fill="' + color + '" stroke="white" stroke-width="1.5"/></svg>';
+    return 'url("data:image/svg+xml,' + encodeURIComponent(svg) + '") ' + c + ' ' + c + ', crosshair';
+}
+
+function canvas_cursor_for_mode() {
+    if (!penEnabled) return 'default';
+    if (textWriting) return 'text';
+    if (selectMode) return 'crosshair';
+    if (spotErase) return dot_cursor('rgba(120, 120, 120, 1)', 4); // the eraser outline shows its size
+    if (strokeDelete) return dot_cursor('rgba(255, 0, 0, 1)', 6);
+    var pen = getPenColorAndWidthByIndex(activePenIndex);
+    return dot_cursor(pen[0], pen[1]);
+}
+
+var lastCanvasCursor = null;
+function update_canvas_cursor() {
+    var cursor = canvas_cursor_for_mode();
+    if (cursor === lastCanvasCursor) return;
+    lastCanvasCursor = cursor;
+    document.documentElement.style.setProperty('--ts-canvas-cursor', cursor);
+}
+
+// Keep the cursor in step with the current tool and pen
+window.addEventListener('pointerover', update_canvas_cursor, true);
+window.addEventListener('pointermove', function(e) { if (is_canvas_target(e)) update_canvas_cursor(); }, true);
+document.addEventListener('keyup', update_canvas_cursor);
+document.addEventListener('keydown', update_canvas_cursor);
+optionBar.addEventListener('click', update_canvas_cursor);
+window.addEventListener('focus', update_canvas_cursor);
+update_canvas_cursor();
 
 // ----------------------------------------- Perfect Freehand -----------------------------------------
 

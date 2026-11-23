@@ -16,6 +16,7 @@ Website to test the drawing functionality: https://rytisgit.github.io/Anki-Stylu
 * Toolbar tooltips show each button's name and hotkey; undo/redo show a short message in the top right
 * Hotkeys can be changed in `AnkiDraw → Configure hotkeys...` (tooltips follow your keys)
 * Added pen on/off toggle (<kbd>v</kbd>): with the pen off, drawings stay visible but clicks and touches go to the card
+* The canvas shows its own dot cursor in the pen's colour and size, so it no longer reverts to the arrow after switching windows or returning from the deck list
 * Added `AnkiDraw → Pen pressure settings...`: turn pressure sensitivity off and set the fixed pressure (line thickness) used instead
 * Added background color selection
 * Added follow screen mode(menu option) and small canvas mode(<kbd>alt + b</kbd>) to increase drawing speed on very big cards 

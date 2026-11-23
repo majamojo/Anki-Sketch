@@ -24,6 +24,7 @@ Important parts of Javascript code inspired by http://creativejs.com/tutorials/p
 __addon_name__ = "AnkiDraw"
 __version__ = "1.7"
 
+import sys
 from pathlib import Path
 
 from aqt import mw
@@ -101,6 +102,47 @@ def ts_save():
         if key in saved_value_defaults:
             mw.pm.profile[key] = value
 
+def ts_disable_pen_press_and_hold():
+    """
+    Stop Windows from showing the pen press-and-hold circle (and turning a long
+    press into a right click) over Anki, so holding the pen still to draw a
+    straight line works without the ring appearing.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+
+        hwnds = [int(mw.winId())]
+        enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def collect(hwnd, _):
+            hwnds.append(hwnd)
+            return True
+        user32.EnumChildWindows(wintypes.HWND(hwnds[0]), enum_proc(collect), 0)
+
+        # Windows 8+ pointer input feedback
+        set_feedback = getattr(user32, "SetWindowFeedbackSetting", None)
+        if set_feedback:
+            set_feedback.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.DWORD, wintypes.UINT, ctypes.c_void_p]
+            set_feedback.restype = wintypes.BOOL
+        FEEDBACK_PEN_PRESSANDHOLD = 5
+        FEEDBACK_PEN_RIGHTTAP = 6
+        off = wintypes.BOOL(False)
+
+        # Legacy tablet service flag, still honoured for WM_GESTURE based input
+        user32.SetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.HANDLE]
+        TABLET_DISABLE_PRESSANDHOLD = 0x00000001
+
+        for hwnd in hwnds:
+            if set_feedback:
+                for feedback in (FEEDBACK_PEN_PRESSANDHOLD, FEEDBACK_PEN_RIGHTTAP):
+                    set_feedback(hwnd, feedback, 0, ctypes.sizeof(off), ctypes.byref(off))
+            user32.SetPropW(hwnd, "MicrosoftTabletPenServiceProperty", TABLET_DISABLE_PRESSANDHOLD)
+    except Exception as e:
+        print("AnkiDraw: could not disable pen press-and-hold feedback:", e)
+
 def ts_load():
     """
     Load configuration from profile, set states of checkable menu objects
@@ -113,6 +155,7 @@ def ts_load():
         globals()[key] = mw.pm.profile.get(key, default)
 
     ts_profile_loaded = True
+    ts_disable_pen_press_and_hold()
     ts_menu_auto_hide.setChecked(ts_auto_hide)
     ts_menu_auto_hide_pointer.setChecked(ts_auto_hide_pointer)
     ts_menu_small_default.setChecked(ts_default_small_canvas)
@@ -154,73 +197,85 @@ def blackboard_html():
     
     <div id="pencil_button_bar">
         <!-- SVG icons from https://github.com/tabler/tabler-icons/ -->
-        <button id="ts_visibility_button" class="active" title="Toggle visiblity (, comma)"
+        <button id="ts_visibility_button" class="active" data-hotkey="visibility"
               onclick="switch_visibility();" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 20h4l10.5 -10.5a1.5 1.5 0 0 0 -4 -4l-10.5 10.5v4"></path><path d="M13.5 6.5l4 4"></path></svg>
         </button>
 
-        <button id="ts_perfect_freehand_button" title="Perfect Freehand (Alt + x)"
+        <button id="ts_perfect_freehand_button" data-hotkey="perfect_freehand"
               onclick="switch_perfect_freehand()" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M8 20l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4h4z"></path><path d="M13.5 6.5l4 4"></path><path d="M16 18h4m-2 -2v4"></path></svg>
         </button>
 
-        <button id="ts_kanji_button" title="Toggle calligrapher (Alt + c)"
+        <button id="ts_kanji_button" data-hotkey="calligraphy"
               onclick="switch_calligraphy_mode();" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 21v-4a4 4 0 1 1 4 4h-4"></path><path d="M21 3a16 16 0 0 0 -12.8 10.2"></path><path d="M21 3a16 16 0 0 1 -10.2 12.8"></path><path d="M10.6 9a9 9 0 0 1 4.4 4.4"></path></svg>
         </button>
 
-        <button id="ts_text_button" title="Toggle text writing (Alt + t)"
+        <button id="ts_text_button" data-hotkey="text"
               onclick="switch_text_writing_mode();" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M19 10h-14" />  <path d="M5 6h14" />  <path d="M14 14h-9" />  <path d="M5 18h6" />  <path d="M18 15v6" />  <path d="M15 18h6" /></svg>        </button>
 
-        <button id="ts_stroke_delete_button" title="Stroke Delete (Alt + d), hold shift+d"
+        <button id="ts_stroke_delete_button" data-hotkey="stroke_delete"
             onclick="switch_stroke_delete_mode()" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 3l18 18" /><path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l5 -4.993m2.009 -2.01l3 -3a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41c-1.417 1.431 -2.406 2.432 -2.97 3m-2.02 2.043l-4.211 4.256" /><path d="M18 13.3l-6.3 -6.3" /></svg>
         </button>
-        
-        <button id="ts_undo_button" title="Undo the last stroke (Alt + z)"
+
+        <button id="ts_select_button" data-hotkey="select"
+            onclick="switch_select_mode()" >
+        <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4.028 13.252c-.657 -.972 -1.028 -2.078 -1.028 -3.252c0 -3.866 4.03 -7 9 -7s9 3.134 9 7s-4.03 7 -9 7c-1.913 0 -3.686 -.464 -5.144 -1.255" /><path d="M5 15m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /><path d="M5 17c0 1.42 .316 2.805 1 4" /></svg>
+        </button>
+
+        <button id="ts_delete_selection_button" data-hotkey="delete_selection"
+            onclick="delete_selection()" >
+        <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 7l16 0" /><path d="M10 11l0 6" /><path d="M14 11l0 6" /><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12" /><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3" /></svg>
+        </button>
+
+        <button id="ts_undo_button" data-hotkey="undo"
               onclick="ts_undo();" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4.05 11a8 8 0 1 1 .5 4m-.5 5v-5h5"></path></svg>
         </button>
-        <button id="ts_redo_button" title="Redo the last stroke (Alt + y)"
+        <button id="ts_redo_button" data-hotkey="redo"
               onclick="ts_redo();" >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M19.95 11a8 8 0 1 0 -.5 4m.5 5v-5h-5"></path></svg>
         </button>
-        <button class="active" title="Clean canvas (. dot)"
+        <button class="active" data-hotkey="clear"
               onclick="add_clear_marker();" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 7h16"></path><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2 -2l1 -12"></path><path d="M9 7v-3a1 1 0 0 1 1 -1h4a1 1 0 0 1 1 1v3"></path><path d="M10 12l4 4m0 -4l-4 4"></path></svg>
 
-        <button id="ts_switch_fullscreen_button" class="active" title="Toggle fullscreen canvas(Alt + b)"
+        <button id="ts_switch_fullscreen_button" class="active" data-hotkey="fullscreen"
               onclick="switch_small_canvas();" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M9.00002 3.99998H4.00004L4 9M20 8.99999V4L15 3.99997M15 20H20L20 15M4 15L4 20L9.00002 20"></path></svg>
         </button>
 
-        <button id="ts_switch_pen1_button" class="active" title="Switch to Pen 1 (Alt + 1)"
+        <button id="ts_switch_pen1_button" class="active" data-hotkey="pen1"
               onclick="activate_pen1();" >
         <svg stroke="currentColor" fill="none" stroke-width="1.8" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18.333 2c1.96 0 3.56 1.537 3.662 3.472l.005 .195v12.666c0 1.96 -1.537 3.56 -3.472 3.662l-.195 .005h-12.666a3.667 3.667 0 0 1 -3.662 -3.472l-.005 -.195v-12.666c0 -1.96 1.537 -3.56 3.472 -3.662l.195 -.005h12.666zm-5.339 5.886c-.083 -.777 -1.008 -1.16 -1.617 -.67l-.084 .077l-2 2l-.083 .094a1 1 0 0 0 0 1.226l.083 .094l.094 .083a1 1 0 0 0 1.226 0l.094 -.083l.293 -.293v5.586l.007 .117a1 1 0 0 0 1.986 0l.007 -.117v-8l-.006 -.114z" /></svg>
         </button>
 
-        <button id="ts_switch_pen2_button" class="active" title="Switch to Pen 2 (Alt + 2)"
+        <button id="ts_switch_pen2_button" class="active" data-hotkey="pen2"
               onclick="activate_pen2();" >
         <svg stroke="currentColor" fill="none" stroke-width="1.8" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18.333 2c1.96 0 3.56 1.537 3.662 3.472l.005 .195v12.666c0 1.96 -1.537 3.56 -3.472 3.662l-.195 .005h-12.666a3.667 3.667 0 0 1 -3.662 -3.472l-.005 -.195v-12.666c0 -1.96 1.537 -3.56 3.472 -3.662l.195 -.005h12.666zm-5.333 5h-3l-.117 .007a1 1 0 0 0 0 1.986l.117 .007h3v2h-2l-.15 .005a2 2 0 0 0 -1.844 1.838l-.006 .157v2l.005 .15a2 2 0 0 0 1.838 1.844l.157 .006h3l.117 -.007a1 1 0 0 0 0 -1.986l-.117 -.007h-3v-2h2l.15 -.005a2 2 0 0 0 1.844 -1.838l.006 -.157v-2l-.005 -.15a2 2 0 0 0 -1.838 -1.844l-.157 -.006z" /></path></svg>
         </button>
 
-        <button id="ts_switch_pen3_button" class="active" title="Switch to Pen 3 (Alt + 3)"
+        <button id="ts_switch_pen3_button" class="active" data-hotkey="pen3"
               onclick="activate_pen3();" >
         <svg stroke="currentColor" fill="none" stroke-width="1.8" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18.333 2c1.96 0 3.56 1.537 3.662 3.472l.005 .195v12.666c0 1.96 -1.537 3.56 -3.472 3.662l-.195 .005h-12.666a3.667 3.667 0 0 1 -3.662 -3.472l-.005 -.195v-12.666c0 -1.96 1.537 -3.56 3.472 -3.662l.195 -.005h12.666zm-5.333 5h-2l-.15 .005a2 2 0 0 0 -1.85 1.995a1 1 0 0 0 1.974 .23l.02 -.113l.006 -.117h2v2h-2l-.133 .007c-1.111 .12 -1.154 1.73 -.128 1.965l.128 .021l.133 .007h2v2h-2l-.007 -.117a1 1 0 0 0 -1.993 .117a2 2 0 0 0 1.85 1.995l.15 .005h2l.15 -.005a2 2 0 0 0 1.844 -1.838l.006 -.157v-2l-.005 -.15a1.988 1.988 0 0 0 -.17 -.667l-.075 -.152l-.019 -.032l.02 -.03a2.01 2.01 0 0 0 .242 -.795l.007 -.174v-2l-.005 -.15a2 2 0 0 0 -1.838 -1.844l-.157 -.006z" /></svg>
         </button>
 
-        <button id="ts_switch_pen4_button" class="active" title="Switch to Pen 4 (Alt + 4)"
+        <button id="ts_switch_pen4_button" class="active" data-hotkey="pen4"
               onclick="activate_pen4();" >
         <svg stroke="currentColor" fill="none" stroke-width="1.8" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18.333 2c1.96 0 3.56 1.537 3.662 3.472l.005 .195v12.666c0 1.96 -1.537 3.56 -3.472 3.662l-.195 .005h-12.666a3.667 3.667 0 0 1 -3.662 -3.472l-.005 -.195v-12.666c0 -1.96 1.537 -3.56 3.472 -3.662l.195 -.005h12.666zm-4.333 5a1 1 0 0 0 -.993 .883l-.007 .117v3h-2v-3l-.007 -.117a1 1 0 0 0 -1.986 0l-.007 .117v3l.005 .15a2 2 0 0 0 1.838 1.844l.157 .006h2v3l.007 .117a1 1 0 0 0 1.986 0l.007 -.117v-8l-.007 -.117a1 1 0 0 0 -.993 -.883z" /></svg>
         </button>
 
-        <button id="ts_switch_pen4_button" class="active" title="Play Sound on card again (R)"
+        <button id="ts_play_sound_button" class="active" data-hotkey="sound"
               onclick="PlaySound();" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 10a7 7 0 1 1 13 3.6a10 10 0 0 1 -2 2a8 8 0 0 0 -2 3a4.5 4.5 0 0 1 -6.8 1.4" /><path d="M10 10a3 3 0 1 1 5 2.2" /></svg>
         </button>
 
     </div>
+    <div id="ts_tooltip"></div>
+    <div id="ts_toast"></div>
 </div>
 """
 
@@ -358,6 +413,40 @@ body {
 {
   display: """+get_css_for_auto_hide(ts_auto_hide, ts_zen_mode)+""";
 }
+#ts_tooltip, #ts_toast {
+  position: fixed;
+  z-index: 9000;
+  pointer-events: none;
+  font: 13px/1.3 sans-serif;
+  color: #fff;
+  background: rgba(30, 30, 30, 0.92);
+  border-radius: 6px;
+  white-space: nowrap;
+}
+#ts_tooltip {
+  display: none;
+  padding: 5px 8px;
+}
+#ts_tooltip .ts_key {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.18);
+  font-family: monospace;
+}
+#ts_toast {
+  top: 12px;
+  right: 12px;
+  padding: 7px 12px;
+  font-size: 14px;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity .2s, transform .2s;
+}
+#ts_toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
 </style>"""
 
 def blackboard_js():
@@ -373,6 +462,7 @@ var calligraphy = """ + ts_default_Calligraphy + """;
 var strokeDelete = false;
 var textWriting = false;
 var isDeleting = false;  // Track if currently deleting (for hold mode)
+var selectMode = false;  // Lasso select tool
 var pen1Color = """ + "\'" + str(ts_pen1_color) + "\'" + """;
 var pen1Width = """ + str(ts_pen1_width) + """;
 var pen2Color = """ + "\'" + str(ts_pen2_color) + "\'" + """;
@@ -449,6 +539,10 @@ var ts_kanji_button = document.getElementById('ts_kanji_button');
 var ts_text_button = document.getElementById('ts_text_button');
 var ts_perfect_freehand_button = document.getElementById('ts_perfect_freehand_button');
 var ts_stroke_delete_button = document.getElementById('ts_stroke_delete_button');
+var ts_select_button = document.getElementById('ts_select_button');
+var ts_delete_selection_button = document.getElementById('ts_delete_selection_button');
+var ts_tooltip = document.getElementById('ts_tooltip');
+var ts_toast = document.getElementById('ts_toast');
 var ts_switch_fullscreen_button = document.getElementById('ts_switch_fullscreen_button');
 
 
@@ -503,24 +597,28 @@ function recolor_based_on_active_pen()
 
 function activate_pen1()
 {
+    exit_select_mode()
     activePenIndex = 0
     update_pen_settings();
 }
 
 function activate_pen2()
 {
+    exit_select_mode()
     activePenIndex = 1
     update_pen_settings();
 }
 
 function activate_pen3()
 {
+    exit_select_mode()
     activePenIndex = 2
     update_pen_settings();
 }
 
 function activate_pen4()
 {
+    exit_select_mode()
     activePenIndex = 3
     update_pen_settings();
 }
@@ -531,10 +629,12 @@ function reset_drawing_modes()
     ts_perfect_freehand_button.className = '';
     ts_stroke_delete_button.className = '';
     ts_text_button.className = '';
+    ts_select_button.className = '';
     calligraphy = false;
     perfectFreehand = false;
     strokeDelete = false
     textWriting = false;
+    selectMode = false;
     reset_to_main_pen_settings()
     ts_redraw()
 }
@@ -547,15 +647,22 @@ calligraphy_activated = false;
 perfectFreehand_activated = false;
 strokeDelete_activated = false
 textWriting_activated = false;
+ts_select_button_class = '';
+selectMode_activated = false;
 
 function save_drawing_modes_for_delete()
 {
     ts_kanji_button_class = ts_kanji_button.className;
     ts_perfect_freehand_button_class = ts_perfect_freehand_button.className;
     ts_text_button_class = ts_text_button.className;
+    ts_select_button_class = ts_select_button.className;
     calligraphy_activated = calligraphy
     perfectFreehand_activated = perfectFreehand
     textWriting_activated = textWriting
+    selectMode_activated = selectMode
+    // Stroke delete takes over the pointer, so the lasso must not run alongside it
+    selectMode = false
+    ts_select_button.className = ''
     reset_to_main_pen_settings()
     ts_redraw()
 }
@@ -565,9 +672,11 @@ function restore_drawing_modes_for_delete()
     ts_kanji_button.className = ts_kanji_button_class
     ts_perfect_freehand_button.className = ts_perfect_freehand_button_class
     ts_text_button.className = ts_text_button_class
+    ts_select_button.className = ts_select_button_class
     calligraphy = calligraphy_activated
     perfectFreehand = perfectFreehand_activated
     textWriting = textWriting_activated
+    selectMode = selectMode_activated
     reset_to_main_pen_settings()
     ts_redraw()
 }
@@ -618,6 +727,22 @@ function switch_text_writing_mode()
         ts_text_button.className = '';
     }
 }
+function switch_select_mode()
+{
+    stop_drawing();
+    var temp = !selectMode;
+    reset_drawing_modes()
+    selectMode = temp;
+    ts_select_button.className = selectMode ? 'active' : '';
+}
+
+function exit_select_mode()
+{
+    if(!selectMode) return;
+    selectMode = false;
+    ts_select_button.className = '';
+}
+
 function switch_stroke_delete_mode()
 {
     stop_drawing();
@@ -684,6 +809,7 @@ function switch_small_canvas()
 function switch_visibility()
 {
 	stop_drawing();
+    clear_selection();
     if (visible)
     {
         canvas.style.display='none';
@@ -867,8 +993,11 @@ function get_no_alpha(line_color){
 
 function ts_undo(){
 	stop_drawing();
+    clear_selection();
+    if(!lineHistory.length) show_toast('Nothing to undo');
     if(lineHistory.length>0){
         var poppedAction = lineHistory.pop()
+        show_toast('Undo: ' + describe_action(poppedAction))
         redoStack.push(poppedAction)
         ts_redo_button.className = "active";
         stroke_cache[lineHistory.length] = null;
@@ -881,6 +1010,9 @@ function ts_undo(){
                 break;
             case 'D'://Delete Stroke Lines
                 poppedAction.deletedList.forEach( deletedIndex => { lineHistory[deletedIndex].visible = true } )
+                break;
+            case 'M'://Moved selection
+                translate_actions(poppedAction.movedList, -poppedAction.dx, -poppedAction.dy)
                 break;
             case 'X'://Clear actions
                 break;
@@ -899,9 +1031,11 @@ function ts_undo(){
 }
 function ts_redo() {
     stop_drawing();
-    if (redoStack.length < 1) return;
+    clear_selection();
+    if (redoStack.length < 1) { show_toast('Nothing to redo'); return; }
     
     var redoAction = redoStack.pop();
+    show_toast('Redo: ' + describe_action(redoAction))
     readd_action_to_history(redoAction)
     ts_undo_button.className = "active";
     switch (redoAction.type) {
@@ -911,6 +1045,9 @@ function ts_redo() {
             break;
         case 'D'://Delete Stroke Lines
             redoAction.deletedList.forEach( deletedIndex => { lineHistory[deletedIndex].visible = false } )
+            break;
+        case 'M'://Moved selection
+            translate_actions(redoAction.movedList, redoAction.dx, redoAction.dy)
             break;
         case 'X'://Delete Stroke Lines
             break;
@@ -937,6 +1074,7 @@ function clear_canvas()
 {
 	//don't continue to put points into an empty array(pointermove) if clearing while drawing on the canvas
 	stop_drawing();
+    clear_selection();
     reset_history();
     reset_redo()
 	ts_clear();
@@ -946,6 +1084,7 @@ function add_clear_marker()
 {
 	//don't continue to put points into an empty array(pointermove) if clearing while drawing on the canvas
 	stop_drawing();
+    clear_selection();
     if(lineHistory.length && lineHistory[lineHistory.length-1].type != 'X')add_action_to_history({ type: 'X'})
 	ts_clear();
 }
@@ -975,6 +1114,7 @@ function reset_history(){
 }
 
 function stop_drawing() {
+    straight_line_cancel()
     reset_to_main_pen_settings()
     submitCurrentText()
     isPointerDown = false;
@@ -1044,6 +1184,12 @@ async function draw_upto_latest_point_async(startLine, startPoint, startStroke){
             continue;
         }
 
+        // While a selection is being dragged, draw it at its dragged position
+        var shiftedForDrag = selectionDrag && selectionDrag.indexSet.has(i);
+        if (shiftedForDrag) {
+            ctx.save();
+            ctx.translate(selectionDrag.dx, selectionDrag.dy);
+        }
         update_line_draw_settings(actionToDraw.color, actionToDraw.width, actionToDraw.opacity)
         switch (actionToDraw.type) {
             case 'C'://Calligraphy
@@ -1090,6 +1236,8 @@ async function draw_upto_latest_point_async(startLine, startPoint, startStroke){
                 break;
             case 'X'://Clear Screen
                 break;
+            case 'M'://Move selection
+                break;
             case 'T'://Write Text
                 var save = ctx.strokeStyle
                 // update_line_draw_settings(get_no_alpha(save), actionToDraw.width, actionToDraw.opacity)
@@ -1103,6 +1251,7 @@ async function draw_upto_latest_point_async(startLine, startPoint, startStroke){
             default://how did you get here??
                 break;
         }
+        if (shiftedForDrag) ctx.restore();
         //post loop cleanup
         if(all_drawing_finished(i)){
             nextLine = lineHistory.length;
@@ -1446,7 +1595,7 @@ function drawTextFromAction(paramCtx, action){
 
 function pointerDownLine(e) {
     wrapper.classList.add('nopointer');
-	if (!e.isPrimary || calligraphy || strokeDelete || textWriting) { return; }
+	if (!e.isPrimary || calligraphy || strokeDelete || textWriting || selectMode) { return; }
 	if (e.pointerType[0] == 'p' && pressureSensitivity) { drawingWithPressurePenOnly = true }
 	else if ( drawingWithPressurePenOnly) { return; }
     var pen = getPenColorAndWidthByIndex(activePenIndex);
@@ -1475,14 +1624,21 @@ function pointerDownLine(e) {
             draw_secondary_path_at_some_point_async(currentAction.points[0][0],currentAction.points[0][1],currentAction.points[0][0],currentAction.points[0][1],currentAction.points[0][0],currentAction.points[0][1],currentAction.points[0][3])
         }
         start_drawing();
+        straight_line_track(e.offsetX, e.offsetY);
     }
 }
 
 function pointerMoveLine(e) {
-	if (!e.isPrimary || calligraphy || strokeDelete || textWriting) { return; }
+	if (!e.isPrimary || calligraphy || strokeDelete || textWriting || selectMode) { return; }
 	if (e.pointerType[0] != 'p' && drawingWithPressurePenOnly) { return; }
     var pen = getPenColorAndWidthByIndex(activePenIndex);
     if (isPointerDown) {
+        if (straightLine.snapped) {
+            // Already snapped: the end of the straight line follows the pen
+            set_straight_line_end(e.offsetX, e.offsetY);
+            draw_straight_line_preview();
+            return;
+        }
         currentAction.points.push([
 			e.offsetX,
 			e.offsetY,
@@ -1500,16 +1656,22 @@ function pointerMoveLine(e) {
             p3 = currentAction.points.length - 1;
             draw_secondary_path_at_some_point_async(currentAction.points[p1][0],currentAction.points[p1][1],currentAction.points[p2][0],currentAction.points[p2][1],currentAction.points[p3][0],currentAction.points[p3][1],currentAction.points[p3][3])
         }
+        straight_line_track(e.offsetX, e.offsetY);
     }
 }
 
 function pointerUpLine(e) {
     wrapper.classList.remove('nopointer');
     /* Needed for the last bit of the drawing. */
-	if (!e.isPrimary || calligraphy || strokeDelete || textWriting) { return; }
+	if (!e.isPrimary || calligraphy || strokeDelete || textWriting || selectMode) { return; }
 	if (e.pointerType[0] != 'p' && drawingWithPressurePenOnly) { return; }
     var pen = getPenColorAndWidthByIndex(activePenIndex);
-    if (isPointerDown) {
+    if (isPointerDown && straightLine.snapped) {
+        set_straight_line_end(e.offsetX, e.offsetY);
+        add_action_to_history(currentAction)
+        secondary_ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);//clear the guide line in second canvas
+    }
+    else if (isPointerDown) {
         currentAction.points.push([
 			e.offsetX,
 			e.offsetY,
@@ -1535,6 +1697,73 @@ function pointerUpLine(e) {
     
 }
 
+// ----------------------------------------- Straight lines -----------------------------------------
+// Hold the pen still at the end of a stroke and it snaps to a straight line from where the
+// stroke started. Keep moving after the snap to adjust the end point, then lift to commit.
+
+var STRAIGHT_LINE_HOLD_MS = 600;   // how long the pen has to stay still
+var STRAIGHT_LINE_TOLERANCE = 6;   // px of jitter still counted as "still"
+var STRAIGHT_LINE_MIN_LENGTH = 12; // ignore holds on tiny strokes and dots
+var straightLine = { timer: null, anchor: null, snapped: false, pressure: 2, width: 1 };
+
+function straight_line_cancel() {
+    clearTimeout(straightLine.timer);
+    straightLine.timer = null;
+    straightLine.anchor = null;
+    straightLine.snapped = false;
+}
+
+function straight_line_track(x, y) {
+    if (straightLine.snapped) return;
+    if (straightLine.anchor && getDist([x, y], straightLine.anchor) <= STRAIGHT_LINE_TOLERANCE) return;
+    straightLine.anchor = [x, y];
+    clearTimeout(straightLine.timer);
+    straightLine.timer = setTimeout(straight_line_snap, STRAIGHT_LINE_HOLD_MS);
+}
+
+function straight_line_snap() {
+    straightLine.timer = null;
+    if (!isPointerDown || !currentAction || !currentAction.points || currentAction.points.length < 2) return;
+    if (currentAction.type != 'L' && currentAction.type != 'P') return;
+    var pts = currentAction.points;
+    var end = pts[pts.length - 1];
+    if (getDist(pts[0], end) < STRAIGHT_LINE_MIN_LENGTH) return;
+    // Keep the stroke's average pressure and width so the line looks like the pen
+    var pressure = 0, width = 0;
+    pts.forEach(p => { pressure += p[2]; width += p[3]; });
+    straightLine.pressure = pressure / pts.length;
+    straightLine.width = width / pts.length;
+    straightLine.snapped = true;
+    set_straight_line_end(end[0], end[1]);
+    draw_straight_line_preview();
+}
+
+function set_straight_line_end(x, y) {
+    var start = currentAction.points[0];
+    var length = getDist(start, [x, y]);
+    var steps = Math.max(1, Math.ceil(length / 4)); // evenly spaced points keep perfect freehand smooth
+    var points = [];
+    for (var i = 0; i <= steps; i++) {
+        var t = i / steps;
+        points.push([start[0] + (x - start[0]) * t, start[1] + (y - start[1]) * t, straightLine.pressure, straightLine.width]);
+    }
+    currentAction.points = points;
+}
+
+function draw_straight_line_preview() {
+    var pts = currentAction.points;
+    secondary_ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    if (currentAction.type == 'P') {
+        secondary_ctx.fill(new Path2D(getFreeDrawSvgPath(pts, currentAction.width, true)));
+    } else {
+        secondary_ctx.beginPath();
+        secondary_ctx.moveTo(pts[0][0], pts[0][1]);
+        secondary_ctx.lineTo(pts[pts.length - 1][0], pts[pts.length - 1][1]);
+        secondary_ctx.lineWidth = straightLine.width;
+        secondary_ctx.stroke();
+    }
+}
+
 var tempColor = ""; // The variable to change
 var eraseMode = false // Are we currently drawing the erase line?
 var intervalId = null; // To track the interval
@@ -1548,6 +1777,11 @@ function updateVariable() {
 document.addEventListener('keydown', function(e) {
     // For hold mode, start deleting when shift+d is pressed
     if(textWriting)return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIndices.length) {
+        e.preventDefault();
+        delete_selection();
+        return;
+    }
     if ((e.keyCode == 68 || e.key == "d") && e.shiftKey) {
         e.preventDefault();
         // Only activate if this is NOT a repeat event (first press)
@@ -1571,70 +1805,115 @@ document.addEventListener('keyup', function(e) {
 // TODO add merging of front into back for correct behaviour with saving draw info
 // TODO add toggle to not apply front card to the back one
 // TODO clear history button?
+// ----------------------------------------- Hotkeys and tooltips -----------------------------------------
+// Single source of truth: the keyup handler below and the toolbar tooltips both read this table,
+// so a tooltip always shows the key that actually triggers the button.
+var ts_hotkeys = {
+    visibility:       { name: 'Toggle visibility',          key: ',',  action: switch_visibility },
+    perfect_freehand: { name: 'Perfect Freehand',            key: 'x',  alt: true, action: switch_perfect_freehand },
+    calligraphy:      { name: 'Calligrapher',                key: 'c',  alt: true, action: switch_calligraphy_mode },
+    text:             { name: 'Text writing',                key: 't',  alt: true, action: switch_text_writing_mode },
+    stroke_delete:    { name: 'Stroke delete (circle to erase inside)', key: 'd', alt: true, extra: 'hold Shift + D',
+                        action: function() { finishDelete(); switch_stroke_delete_mode(); } },
+    select:           { name: 'Select (lasso, then drag to move)', key: 's', alt: true, action: switch_select_mode },
+    delete_selection: { name: 'Delete selection',            label: 'Delete / Backspace' },
+    undo:             { name: 'Undo',                        key: 'z',  alt: true, action: ts_undo },
+    redo:             { name: 'Redo',                        key: 'y',  alt: true, action: ts_redo },
+    clear:            { name: 'Clear canvas',                key: '.',  action: add_clear_marker },
+    fullscreen:       { name: 'Toggle fullscreen canvas',    key: 'b',  alt: true, action: switch_small_canvas },
+    pen1:             { name: 'Pen 1',                       key: '1',  alt: true, action: activate_pen1 },
+    pen2:             { name: 'Pen 2',                       key: '2',  alt: true, action: activate_pen2 },
+    pen3:             { name: 'Pen 3',                       key: '3',  alt: true, action: activate_pen3 },
+    pen4:             { name: 'Pen 4',                       key: '4',  alt: true, action: activate_pen4 },
+    sound:            { name: 'Replay card audio',           label: 'R' }, // handled by Anki itself
+};
+
+function hotkey_label(hk) {
+    if (hk.label) return hk.label;
+    var names = { ',': ', (comma)', '.': '. (dot)' };
+    var label = (hk.alt ? 'Alt + ' : '') + (names[hk.key] || hk.key.toUpperCase());
+    return hk.extra ? label + ', or ' + hk.extra : label;
+}
+
+function hotkey_matches(hk, e) {
+    if (!hk.key || e.ctrlKey || e.metaKey || !!hk.alt !== e.altKey) return false;
+    if (hk.alt) {
+        // keyCode keeps Alt shortcuts working on layouts where Alt changes e.key
+        return e.keyCode === hk.key.toUpperCase().charCodeAt(0) || (e.key && e.key.toLowerCase() === hk.key);
+    }
+    return e.key === hk.key;
+}
+
 document.addEventListener('keyup', function(e) {
-    // alt + z
-    if ((e.keyCode == 90 || e.key == "z") && e.altKey) {
-		e.preventDefault();
-        ts_undo();
+    for (var id in ts_hotkeys) {
+        var hk = ts_hotkeys[id];
+        if (!hk.action || !hotkey_matches(hk, e)) continue;
+        if (!hk.alt && textWriting) continue; // plain keys are being typed into a text box
+        if (hk.alt) e.preventDefault();
+        hk.action();
     }
-    // alt + y
-    if ((e.keyCode == 89 || e.keyCode == "y") && e.altKey) {
-        e.preventDefault();
-        ts_redo();
+});
+
+function show_tooltip(button) {
+    var hk = ts_hotkeys[button.dataset.hotkey];
+    if (!hk) return;
+    ts_tooltip.textContent = hk.name;
+    var key = document.createElement('span');
+    key.className = 'ts_key';
+    key.textContent = hotkey_label(hk);
+    ts_tooltip.appendChild(key);
+    ts_tooltip.style.display = 'block';
+
+    var r = button.getBoundingClientRect();
+    var w = ts_tooltip.offsetWidth, h = ts_tooltip.offsetHeight, gap = 8, left, top;
+    var vertical = getComputedStyle(optionBar).flexDirection.indexOf('column') === 0;
+    if (vertical) { // bar on the left or right edge: show beside it, towards the middle of the screen
+        left = (r.left > window.innerWidth / 2) ? r.left - w - gap : r.right + gap;
+        top = r.top + (r.height - h) / 2;
+    } else { // bar along the top or bottom: show below or above it
+        left = r.left + (r.width - w) / 2;
+        top = (r.top < window.innerHeight / 2) ? r.bottom + gap : r.top - h - gap;
     }
-    // /
-    if (e.key === ".") {
-        add_clear_marker();
+    ts_tooltip.style.left = Math.max(4, Math.min(left, window.innerWidth - w - 4)) + 'px';
+    ts_tooltip.style.top = Math.max(4, Math.min(top, window.innerHeight - h - 4)) + 'px';
+}
+
+function hide_tooltip() {
+    ts_tooltip.style.display = 'none';
+}
+
+optionBar.querySelectorAll('button[data-hotkey]').forEach(function(button) {
+    button.addEventListener('pointerenter', function() { show_tooltip(button); });
+    button.addEventListener('pointerleave', hide_tooltip);
+});
+
+// Brief message in the top right corner, e.g. after undo
+var toastTimer = null;
+function show_toast(message) {
+    ts_toast.textContent = message;
+    ts_toast.style.right = '12px';
+    // Don't cover the toolbar when it sits in the top right corner
+    var bar = optionBar.getBoundingClientRect();
+    if (bar.width && bar.right > window.innerWidth - 80 && bar.top < 80) {
+        ts_toast.style.right = (window.innerWidth - bar.left + 8) + 'px';
     }
-	// ,
-    if (e.key === ",") {
-        switch_visibility();
+    ts_toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() { ts_toast.classList.remove('show'); }, 1200);
+}
+
+function describe_action(action) {
+    switch (action.type) {
+        case 'L':
+        case 'P': return 'stroke';
+        case 'C': return 'calligraphy stroke';
+        case 'T': return 'text "' + (action.text.length > 20 ? action.text.slice(0, 20) + '...' : action.text) + '"';
+        case 'D': return 'delete (' + action.deletedList.length + (action.deletedList.length == 1 ? ' item)' : ' items)');
+        case 'M': return 'move (' + action.movedList.length + (action.movedList.length == 1 ? ' item)' : ' items)');
+        case 'X': return 'clear canvas';
+        default: return 'last action';
     }
-    if ((e.keyCode == 84 || e.key == "t") && e.altKey) {
-        e.preventDefault();
-        switch_text_writing_mode();
-    }
-    if ((e.keyCode == 68 || e.key == "d") && e.altKey) {
-        e.preventDefault();
-        finishDelete()
-        switch_stroke_delete_mode();
-    }
-    // alt + c
-    if ((e.keyCode === 67 || e.key === "c") && e.altKey) {
-        e.preventDefault();
-        switch_calligraphy_mode();
-    }
-        // alt + x
-    if ((e.keyCode === 88 || e.key === "x") && e.altKey) {
-        e.preventDefault();
-        switch_perfect_freehand();
-    }
-    // alt + b
-    if ((e.keyCode === 66 || e.key === "b") && e.altKey) {
-        e.preventDefault();
-        switch_small_canvas();
-    }
-        // alt + 1
-    if ((e.keyCode === 49 || e.key === "1") && e.altKey) {
-        e.preventDefault();
-        activate_pen1();
-    }
-        // alt + 2
-    if ((e.keyCode === 50 || e.key === "2") && e.altKey) {
-        e.preventDefault();
-        activate_pen2();
-    }
-        // alt + 3
-    if ((e.keyCode === 51 || e.key === "3") && e.altKey) {
-        e.preventDefault();
-        activate_pen3();
-    }
-        // alt + 4
-    if ((e.keyCode === 52 || e.key === "4") && e.altKey) {
-        e.preventDefault();
-        activate_pen4();
-    }
-})
+}
 
 // ----------------------------------------- Stroke Delete -----------------------------------------
 
@@ -1706,10 +1985,12 @@ function finishDelete(){
     secondary_ctx.fillStyle = pen[0] //active pen Color;
     secondary_ctx.lineWidth = pen[1] //active pen Color;
     marked_lines = []
+    // A closed delete stroke (circle, or any loop) also erases everything inside it
+    var loop = get_closed_loop(currentAction.points);
     for (let lineIndex = 0; lineIndex < lineHistory.length; lineIndex++) {
         const element = lineHistory[lineIndex];
-        if(!element.points || !element.type == 'D' || !element.visible) continue;
-        if(doLinesIntersect(element.points, currentAction.points)){
+        if(!is_selectable_index(lineIndex)) continue;
+        if(doLinesIntersect(element.points, currentAction.points) || (loop && count_points_inside(element.points, loop) > 0)){
             element.visible = false;//mark as deleted
             marked_lines.push(lineIndex)//add reference for easy undo
         }
@@ -1720,6 +2001,7 @@ function finishDelete(){
         add_action_to_history(currentAction);
     }
     secondary_ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);//clear the guide line in second canvas
+    refresh_selection()
     ts_redraw()
 }
 
@@ -1729,6 +2011,317 @@ function pointerUpStrokeDelete(e) {
     if (!e.isPrimary || !strokeDelete || !currentAction.points || !currentAction.points.length) { return; }
     finishDelete();
 };
+
+// ----------------------------------------- Selection -----------------------------------------
+// Lasso tool (Alt + s) selects strokes and text. A selection can be dragged from any tool:
+// hovering over it shows the move cursor. Delete / Backspace or the bin button removes it.
+
+var selectedIndices = [];
+var selectionDrag = null;  // { start, dx, dy, indexSet } while dragging
+var lassoPoints = null;    // points of the lasso being drawn
+var lastPointerType = '';
+
+function canvas_point(e) {
+    // Same space as e.offsetX on the canvas, but also valid while the pointer is outside it
+    var rect = secondary_canvas.getBoundingClientRect();
+    return [e.clientX - rect.left - secondary_canvas.clientLeft, e.clientY - rect.top - secondary_canvas.clientTop];
+}
+
+function is_canvas_target(e) {
+    return e.target === canvas || e.target === secondary_canvas;
+}
+
+function last_clear_index() {
+    for (var i = lineHistory.length - 1; i >= 0; i--) {
+        if (lineHistory[i].type == 'X') return i;
+    }
+    return -1;
+}
+
+// Only drawn things that are on screen can be selected or deleted
+function is_selectable_index(i) {
+    var a = lineHistory[i];
+    return !!a && a.visible && ['L', 'P', 'C', 'T'].indexOf(a.type) >= 0 &&
+        !!a.points && a.points.length > 0 && i > last_clear_index();
+}
+
+function action_half_width(a) {
+    if (a.type == 'T') return 2;
+    var w = a.width || 1;
+    if (a.type == 'L') a.points.forEach(p => { if (p[3] > w) w = p[3]; });
+    return w / 2;
+}
+
+function action_bounds(a) {
+    var b = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    a.points.forEach(p => {
+        if (p[0] < b.minX) b.minX = p[0];
+        if (p[0] > b.maxX) b.maxX = p[0];
+        if (p[1] < b.minY) b.minY = p[1];
+        if (p[1] > b.maxY) b.maxY = p[1];
+    });
+    var pad = action_half_width(a);
+    b.minX -= pad; b.minY -= pad; b.maxX += pad; b.maxY += pad;
+    return b;
+}
+
+function selection_box() {
+    if (!selectedIndices.length) return null;
+    var box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    selectedIndices.forEach(i => {
+        var b = action_bounds(lineHistory[i]);
+        box.minX = Math.min(box.minX, b.minX); box.minY = Math.min(box.minY, b.minY);
+        box.maxX = Math.max(box.maxX, b.maxX); box.maxY = Math.max(box.maxY, b.maxY);
+    });
+    var pad = 6, dx = selectionDrag ? selectionDrag.dx : 0, dy = selectionDrag ? selectionDrag.dy : 0;
+    return { minX: box.minX - pad + dx, minY: box.minY - pad + dy, maxX: box.maxX + pad + dx, maxY: box.maxY + pad + dy };
+}
+
+function point_in_box(pt, box) {
+    return !!box && pt[0] >= box.minX && pt[0] <= box.maxX && pt[1] >= box.minY && pt[1] <= box.maxY;
+}
+
+function point_in_polygon(pt, poly) {
+    var inside = false;
+    for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+        if (((yi > pt[1]) != (yj > pt[1])) && (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+}
+
+function count_points_inside(points, poly) {
+    var n = 0;
+    points.forEach(p => { if (point_in_polygon(p, poly)) n++; });
+    return n;
+}
+
+function segments_intersect(a, b, c, d) {
+    var den = (d[1] - c[1]) * (b[0] - a[0]) - (d[0] - c[0]) * (b[1] - a[1]);
+    if (den === 0) return false;
+    var uA = ((d[0] - c[0]) * (a[1] - c[1]) - (d[1] - c[1]) * (a[0] - c[0])) / den;
+    var uB = ((b[0] - a[0]) * (a[1] - c[1]) - (b[1] - a[1]) * (a[0] - c[0])) / den;
+    return uA >= 0 && uA <= 1 && uB >= 0 && uB <= 1;
+}
+
+// Returns the polygon enclosed by a stroke, or null if the stroke isn't a closed shape.
+// Closed means the ends meet up, or the stroke crosses itself (the biggest loop is used).
+function get_closed_loop(points) {
+    if (!points || points.length < 4) return null;
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    points.forEach(p => {
+        minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+        minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
+    });
+    var size = Math.hypot(maxX - minX, maxY - minY);
+    if (size < 20) return null;
+    if (getDist(points[0], points[points.length - 1]) <= Math.max(20, size * 0.15)) return points;
+    var best = null;
+    for (var i = 0; i < points.length - 1; i++) {
+        for (var j = points.length - 2; j > i + 1; j--) {
+            if (best && j - i <= best[1] - best[0]) break;
+            if (segments_intersect(points[i], points[i + 1], points[j], points[j + 1])) { best = [i, j]; break; }
+        }
+    }
+    return best ? points.slice(best[0] + 1, best[1] + 1) : null;
+}
+
+function distance_to_segment(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1];
+    var len2 = dx * dx + dy * dy;
+    var t = len2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2)) : 0;
+    return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+}
+
+function action_hit(a, pt) {
+    if (a.type == 'T') return point_in_box(pt, action_bounds(a));
+    var tol = action_half_width(a) + 6, pts = a.points;
+    if (pts.length == 1) return getDist(pt, pts[0]) <= tol;
+    for (var i = 0; i < pts.length - 1; i++) {
+        if (distance_to_segment(pt, pts[i], pts[i + 1]) <= tol) return true;
+    }
+    return false;
+}
+
+function select_with_lasso(points) {
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    points.forEach(p => {
+        minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+        minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
+    });
+    var found = [];
+    if (maxX - minX < 8 && maxY - minY < 8) {
+        // A tap selects the topmost thing under the pen
+        for (var i = lineHistory.length - 1; i >= 0; i--) {
+            if (is_selectable_index(i) && action_hit(lineHistory[i], points[0])) { found.push(i); break; }
+        }
+    } else {
+        for (var i = 0; i < lineHistory.length; i++) {
+            if (!is_selectable_index(i)) continue;
+            var pts = lineHistory[i].points;
+            if (count_points_inside(pts, points) * 2 >= pts.length) found.push(i); // mostly inside the lasso
+        }
+    }
+    set_selection(found);
+}
+
+function set_selection(indices) {
+    selectedIndices = indices;
+    ts_delete_selection_button.className = selectedIndices.length ? 'active' : '';
+    if (!selectedIndices.length) set_canvas_cursor('');
+    draw_selection_overlay();
+}
+
+function clear_selection() {
+    selectionDrag = null;
+    if (!selectedIndices.length) return;
+    set_selection([]);
+}
+
+// Drop things from the selection that were deleted some other way
+function refresh_selection() {
+    if (selectedIndices.length) set_selection(selectedIndices.filter(is_selectable_index));
+}
+
+function set_canvas_cursor(cursor) {
+    if (secondary_canvas.style.cursor !== cursor) secondary_canvas.style.cursor = canvas.style.cursor = cursor;
+}
+
+function draw_selection_overlay() {
+    secondary_ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    var box = selection_box();
+    if (!box) return;
+    secondary_ctx.save();
+    secondary_ctx.setLineDash([6, 4]);
+    secondary_ctx.lineWidth = 1.5;
+    secondary_ctx.strokeStyle = 'rgba(30, 144, 255, 1)';
+    secondary_ctx.fillStyle = 'rgba(30, 144, 255, 0.08)';
+    secondary_ctx.fillRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
+    secondary_ctx.strokeRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
+    secondary_ctx.restore();
+}
+
+function draw_lasso() {
+    secondary_ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    if (!lassoPoints || lassoPoints.length < 2) return;
+    secondary_ctx.save();
+    secondary_ctx.setLineDash([5, 5]);
+    secondary_ctx.lineWidth = 1.5;
+    secondary_ctx.strokeStyle = 'rgba(30, 144, 255, 1)';
+    secondary_ctx.beginPath();
+    secondary_ctx.moveTo(lassoPoints[0][0], lassoPoints[0][1]);
+    lassoPoints.forEach(p => secondary_ctx.lineTo(p[0], p[1]));
+    secondary_ctx.closePath();
+    secondary_ctx.stroke();
+    secondary_ctx.restore();
+}
+
+function translate_actions(indices, dx, dy) {
+    indices.forEach(i => {
+        var a = lineHistory[i];
+        a.points.forEach(p => { p[0] += dx; p[1] += dy; });
+        if (a.type == 'T') { a.x += dx; a.y += dy; }
+        stroke_cache[i] = null; // cached Path2D / calligraphy shapes are at the old position
+    });
+}
+
+function delete_selection() {
+    if (!selectedIndices.length) return;
+    stop_drawing();
+    var deleted = selectedIndices.slice();
+    deleted.forEach(i => { lineHistory[i].visible = false; });
+    add_action_to_history({ type: 'D', points: [], deletedList: deleted, color: 'rgba(255, 0, 0, 1)', width: 4, opacity: '1', visible: true });
+    clear_selection();
+    ts_redraw();
+}
+
+// These run in the capture phase on window, before the drawing tools' own handlers,
+// so a drag on the selection never also starts a stroke.
+function selectionPointerDown(e) {
+    hide_tooltip();
+    if (!e.isPrimary) return;
+    lastPointerType = e.pointerType;
+    if (selectionDrag || lassoPoints) { e.stopPropagation(); e.preventDefault(); return; } // duplicate pointer
+    if (!is_canvas_target(e) || e.button > 0) return;
+    var pt = canvas_point(e);
+    if (point_in_box(pt, selection_box())) {
+        e.stopPropagation();
+        e.preventDefault();
+        submitCurrentText();
+        selectionDrag = { start: pt, dx: 0, dy: 0, indexSet: new Set(selectedIndices) };
+        ts_redraw();
+        draw_selection_overlay();
+        return;
+    }
+    clear_selection();
+    if (selectMode) {
+        e.stopPropagation();
+        e.preventDefault();
+        submitCurrentText();
+        wrapper.classList.add('nopointer');
+        lassoPoints = [pt];
+    }
+}
+
+function selectionPointerMove(e) {
+    if (!e.isPrimary) return;
+    if (selectionDrag) {
+        e.stopPropagation();
+        e.preventDefault();
+        var pt = canvas_point(e);
+        selectionDrag.dx = pt[0] - selectionDrag.start[0];
+        selectionDrag.dy = pt[1] - selectionDrag.start[1];
+        ts_redraw();
+        draw_selection_overlay();
+        return;
+    }
+    if (lassoPoints) {
+        e.stopPropagation();
+        e.preventDefault();
+        var pt = canvas_point(e);
+        if (getDist(pt, lassoPoints[lassoPoints.length - 1]) >= 3) {
+            lassoPoints.push(pt);
+            draw_lasso();
+        }
+        return;
+    }
+    if (selectedIndices.length && is_canvas_target(e) && !isPointerDown) {
+        set_canvas_cursor(point_in_box(canvas_point(e), selection_box()) ? 'move' : '');
+    }
+}
+
+function selectionPointerUp(e) {
+    if (!e.isPrimary) return;
+    if (selectionDrag) {
+        e.stopPropagation();
+        var drag = selectionDrag;
+        selectionDrag = null;
+        if (Math.abs(drag.dx) + Math.abs(drag.dy) >= 1) {
+            translate_actions(selectedIndices, drag.dx, drag.dy);
+            add_action_to_history({ type: 'M', movedList: selectedIndices.slice(), dx: drag.dx, dy: drag.dy, visible: true });
+        }
+        ts_redraw();
+        draw_selection_overlay();
+        return;
+    }
+    if (lassoPoints) {
+        e.stopPropagation();
+        wrapper.classList.remove('nopointer');
+        var points = lassoPoints;
+        lassoPoints = null;
+        select_with_lasso(points);
+    }
+}
+
+window.addEventListener('pointerdown', selectionPointerDown, true);
+window.addEventListener('pointermove', selectionPointerMove, true);
+window.addEventListener('pointerup', selectionPointerUp, true);
+window.addEventListener('pointercancel', selectionPointerUp, true);
+
+// Windows turns a long pen press into a right click; don't let that interrupt drawing
+wrapper.addEventListener('contextmenu', function(e) {
+    if (is_canvas_target(e) && lastPointerType === 'pen') e.preventDefault();
+});
 
 // ----------------------------------------- Perfect Freehand -----------------------------------------
 

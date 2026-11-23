@@ -24,6 +24,7 @@ Important parts of Javascript code inspired by http://creativejs.com/tutorials/p
 __addon_name__ = "AnkiDraw"
 __version__ = "1.7"
 
+import json
 import sys
 from pathlib import Path
 
@@ -34,7 +35,8 @@ from anki.lang import _
 from anki.hooks import addHook
 
 from aqt.qt import QAction, QMenu, QColorDialog, QMessageBox, QInputDialog, QLabel,\
-   QPushButton, QDialog, QVBoxLayout, QComboBox, QHBoxLayout, QSpinBox, QCheckBox, QFontDialog, QFont, QSlider, Qt
+   QPushButton, QDialog, QVBoxLayout, QComboBox, QHBoxLayout, QSpinBox, QCheckBox, QFontDialog, QFont, QSlider, Qt, \
+   QGridLayout, QKeySequenceEdit
 from aqt.qt import QKeySequence,QColor
 from aqt.qt import pyqtSlot as slot
 
@@ -60,6 +62,7 @@ saved_value_defaults = {
     'ts_pressure_sensitivity': True,
     'ts_fixed_pressure': 0.5,
     'ts_eraser_size': 20,
+    'ts_hotkeys_custom': {},  # hotkey id -> key the user picked ("" = no hotkey)
     'ts_orient_vertical': True,
     'ts_y_offset': 2,
     'ts_small_width': 500,
@@ -84,6 +87,34 @@ saved_value_defaults = {
     'ts_font_bold': False,
     'ts_font_italic': False,
 }
+
+# Configurable hotkeys: id, name shown in tooltips and the hotkey dialog, default key.
+# Keys use Qt's portable format ("Alt+E", "Shift+D", "V", ","), which the JS side parses.
+ts_hotkey_defaults = [
+    ("pen_toggle",         "Pen on/off (off: clicks go to the card)", "V"),
+    ("visibility",         "Toggle visibility",                       ","),
+    ("perfect_freehand",   "Perfect Freehand",                        "Alt+X"),
+    ("calligraphy",        "Calligrapher",                            "Alt+C"),
+    ("text",               "Text writing",                            "Alt+T"),
+    ("stroke_delete",      "Stroke delete (circle to erase inside)",  "Alt+D"),
+    ("stroke_delete_hold", "Stroke delete while held",                "Shift+D"),
+    ("spot_erase",         "Spot eraser",                             "Alt+E"),
+    ("spot_erase_hold",    "Spot eraser while held",                  "Shift+E"),
+    ("select",             "Select (lasso, then drag to move)",       "Alt+S"),
+    ("undo",               "Undo",                                    "Alt+Z"),
+    ("redo",               "Redo",                                    "Alt+Y"),
+    ("clear",              "Clear canvas",                            "."),
+    ("fullscreen",         "Toggle fullscreen canvas",                "Alt+B"),
+    ("pen1",               "Pen 1",                                   "Alt+1"),
+    ("pen2",               "Pen 2",                                   "Alt+2"),
+    ("pen3",               "Pen 3",                                   "Alt+3"),
+    ("pen4",               "Pen 4",                                   "Alt+4"),
+]
+
+def ts_hotkey_config():
+    """The current hotkeys (defaults with the user's changes), as passed to the JS side."""
+    return {hid: {"name": name, "combo": ts_hotkeys_custom.get(hid, default)}
+            for hid, name, default in ts_hotkey_defaults}
 
 # Create the variables in the global scope
 for key, value in saved_value_defaults.items():
@@ -202,6 +233,11 @@ def blackboard_html():
         <button id="ts_visibility_button" class="active" data-hotkey="visibility"
               onclick="switch_visibility();" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 20h4l10.5 -10.5a1.5 1.5 0 0 0 -4 -4l-10.5 10.5v4"></path><path d="M13.5 6.5l4 4"></path></svg>
+        </button>
+
+        <button id="ts_pen_toggle_button" data-hotkey="pen_toggle"
+              onclick="toggle_pen();" >
+        <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M10 10l-6 6v4h4l6 -6m1.99 -1.99l2.504 -2.504a2.828 2.828 0 1 0 -4 -4l-2.5 2.5" /><path d="M13.5 6.5l4 4" /><path d="M3 3l18 18" /></svg>
         </button>
 
         <button id="ts_perfect_freehand_button" data-hotkey="perfect_freehand"
@@ -473,6 +509,7 @@ var isDeleting = false;  // Track if currently deleting (for hold mode)
 var selectMode = false;  // Lasso select tool
 var spotErase = false;   // Spot eraser: rubs out parts of strokes
 var eraserSize = """ + str(ts_eraser_size) + """; // spot eraser diameter in px
+var ts_hotkey_config = """ + json.dumps(ts_hotkey_config()) + """; // set in AnkiDraw > Configure hotkeys
 var pen1Color = """ + "\'" + str(ts_pen1_color) + "\'" + """;
 var pen1Width = """ + str(ts_pen1_width) + """;
 var pen2Color = """ + "\'" + str(ts_pen2_color) + "\'" + """;
@@ -551,6 +588,7 @@ var ts_perfect_freehand_button = document.getElementById('ts_perfect_freehand_bu
 var ts_stroke_delete_button = document.getElementById('ts_stroke_delete_button');
 var ts_select_button = document.getElementById('ts_select_button');
 var ts_spot_erase_button = document.getElementById('ts_spot_erase_button');
+var ts_pen_toggle_button = document.getElementById('ts_pen_toggle_button');
 var ts_delete_selection_button = document.getElementById('ts_delete_selection_button');
 var ts_tooltip = document.getElementById('ts_tooltip');
 var ts_toast = document.getElementById('ts_toast');
@@ -610,6 +648,7 @@ function activate_pen1()
 {
     exit_select_mode()
     set_spot_erase(false)
+    set_pen_enabled(true)
     activePenIndex = 0
     update_pen_settings();
 }
@@ -618,6 +657,7 @@ function activate_pen2()
 {
     exit_select_mode()
     set_spot_erase(false)
+    set_pen_enabled(true)
     activePenIndex = 1
     update_pen_settings();
 }
@@ -626,6 +666,7 @@ function activate_pen3()
 {
     exit_select_mode()
     set_spot_erase(false)
+    set_pen_enabled(true)
     activePenIndex = 2
     update_pen_settings();
 }
@@ -634,6 +675,7 @@ function activate_pen4()
 {
     exit_select_mode()
     set_spot_erase(false)
+    set_pen_enabled(true)
     activePenIndex = 3
     update_pen_settings();
 }
@@ -1813,11 +1855,11 @@ document.addEventListener('keydown', function(e) {
         delete_selection();
         return;
     }
-    if (e.keyCode == 69 && e.shiftKey && !e.altKey) {
+    if (ts_hotkeys.spot_erase_hold && combo_matches(ts_hotkeys.spot_erase_hold.combo, e)) {
         e.preventDefault();
         if (!e.repeat) enter_spot_erase_hold();
     }
-    if ((e.keyCode == 68 || e.key == "d") && e.shiftKey) {
+    if (ts_hotkeys.stroke_delete_hold && combo_matches(ts_hotkeys.stroke_delete_hold.combo, e)) {
         e.preventDefault();
         // Only activate if this is NOT a repeat event (first press)
         if (!e.repeat) {
@@ -1828,13 +1870,12 @@ document.addEventListener('keydown', function(e) {
 });
 
 document.addEventListener('keyup', function(e) {
-    // For hold mode, stop deleting when shift+d is released
-    if ((e.keyCode == 68 || e.key == "d") && isDeleting) {
+    // Hold modes end when their key is released (whatever modifiers are still down)
+    if (isDeleting && ts_hotkeys.stroke_delete_hold && combo_key_matches(ts_hotkeys.stroke_delete_hold.combo, e)) {
         finishDelete()
         exit_stroke_delete_mode();
     }
-    // Hold mode for the spot eraser: back to the previous tool when shift+e is released
-    if (e.keyCode == 69 && spotEraseHeld) {
+    if (spotEraseHeld && ts_hotkeys.spot_erase_hold && combo_key_matches(ts_hotkeys.spot_erase_hold.combo, e)) {
         exit_spot_erase_hold();
     }
 });
@@ -1847,52 +1888,121 @@ document.addEventListener('keyup', function(e) {
 // ----------------------------------------- Hotkeys and tooltips -----------------------------------------
 // Single source of truth: the keyup handler below and the toolbar tooltips both read this table,
 // so a tooltip always shows the key that actually triggers the button.
-var ts_hotkeys = {
-    visibility:       { name: 'Toggle visibility',          key: ',',  action: switch_visibility },
-    perfect_freehand: { name: 'Perfect Freehand',            key: 'x',  alt: true, action: switch_perfect_freehand },
-    calligraphy:      { name: 'Calligrapher',                key: 'c',  alt: true, action: switch_calligraphy_mode },
-    text:             { name: 'Text writing',                key: 't',  alt: true, action: switch_text_writing_mode },
-    stroke_delete:    { name: 'Stroke delete (circle to erase inside)', key: 'd', alt: true, extra: 'hold Shift + D',
-                        action: function() { finishDelete(); switch_stroke_delete_mode(); } },
-    spot_erase:       { name: 'Spot eraser',                 key: 'e',  alt: true, extra: 'hold Shift + E', action: switch_spot_erase_mode },
-    select:           { name: 'Select (lasso, then drag to move)', key: 's', alt: true, action: switch_select_mode },
-    delete_selection: { name: 'Delete selection',            label: 'Delete / Backspace' },
-    undo:             { name: 'Undo',                        key: 'z',  alt: true, action: ts_undo },
-    redo:             { name: 'Redo',                        key: 'y',  alt: true, action: ts_redo },
-    clear:            { name: 'Clear canvas',                key: '.',  action: add_clear_marker },
-    fullscreen:       { name: 'Toggle fullscreen canvas',    key: 'b',  alt: true, action: switch_small_canvas },
-    pen1:             { name: 'Pen 1',                       key: '1',  alt: true, action: activate_pen1 },
-    pen2:             { name: 'Pen 2',                       key: '2',  alt: true, action: activate_pen2 },
-    pen3:             { name: 'Pen 3',                       key: '3',  alt: true, action: activate_pen3 },
-    pen4:             { name: 'Pen 4',                       key: '4',  alt: true, action: activate_pen4 },
-    sound:            { name: 'Replay card audio',           label: 'R' }, // handled by Anki itself
+// Actions for the configurable hotkeys; the keys themselves come from ts_hotkey_config (Python)
+var ts_hotkey_actions = {
+    pen_toggle: toggle_pen,
+    visibility: switch_visibility,
+    perfect_freehand: switch_perfect_freehand,
+    calligraphy: switch_calligraphy_mode,
+    text: switch_text_writing_mode,
+    stroke_delete: function() { finishDelete(); switch_stroke_delete_mode(); },
+    spot_erase: switch_spot_erase_mode,
+    select: switch_select_mode,
+    undo: ts_undo,
+    redo: ts_redo,
+    clear: add_clear_marker,
+    fullscreen: switch_small_canvas,
+    pen1: activate_pen1,
+    pen2: activate_pen2,
+    pen3: activate_pen3,
+    pen4: activate_pen4,
+    // stroke_delete_hold and spot_erase_hold are handled on keydown / keyup above
 };
+
+var ts_hotkeys = {};
+
+function set_hotkeys(config) {
+    ts_hotkeys = {};
+    for (var id in config) {
+        ts_hotkeys[id] = { name: config[id].name, combo: parse_combo(config[id].combo), action: ts_hotkey_actions[id] };
+    }
+    if (ts_hotkeys.stroke_delete) ts_hotkeys.stroke_delete.hold = ts_hotkeys.stroke_delete_hold;
+    if (ts_hotkeys.spot_erase) ts_hotkeys.spot_erase.hold = ts_hotkeys.spot_erase_hold;
+    // Fixed keys, listed so their buttons get tooltips too
+    ts_hotkeys.delete_selection = { name: 'Delete selection', label: 'Delete / Backspace' };
+    ts_hotkeys.sound = { name: 'Replay card audio', label: 'R' }; // handled by Anki itself
+}
+
+// Qt key names that differ from the browser's KeyboardEvent.key
+var QT_KEY_NAMES = { space: ' ', del: 'delete', esc: 'escape', return: 'enter', ins: 'insert',
+    pgup: 'pageup', pgdown: 'pagedown', up: 'arrowup', down: 'arrowdown', left: 'arrowleft', right: 'arrowright' };
+
+function parse_combo(text) {
+    if (!text) return null;
+    var parts = text.split('+'), keyText = parts.pop();
+    if (keyText === '' && parts.length) { parts.pop(); keyText = '+'; } // the + key itself
+    var mods = parts.map(p => p.toLowerCase());
+    var key = keyText.toLowerCase();
+    return { ctrl: mods.indexOf('ctrl') >= 0, alt: mods.indexOf('alt') >= 0, shift: mods.indexOf('shift') >= 0,
+             meta: mods.indexOf('meta') >= 0, key: QT_KEY_NAMES[key] || key, keyText: keyText };
+}
+
+function event_key(e) {
+    // keyCode keeps letters and digits working on layouts where Alt or Shift change e.key
+    if ((e.keyCode >= 65 && e.keyCode <= 90) || (e.keyCode >= 48 && e.keyCode <= 57)) return String.fromCharCode(e.keyCode).toLowerCase();
+    return (e.key || '').toLowerCase();
+}
+
+function combo_key_matches(c, e) {
+    return !!c && event_key(e) === c.key;
+}
+
+function combo_matches(c, e) {
+    if (!c || c.ctrl !== e.ctrlKey || c.alt !== e.altKey || c.meta !== e.metaKey) return false;
+    if (!combo_key_matches(c, e)) return false;
+    // Shift must match for letters, digits and named keys; for punctuation Shift already changes the character
+    if (c.key.length > 1 || 'abcdefghijklmnopqrstuvwxyz0123456789'.indexOf(c.key) >= 0) return c.shift === e.shiftKey;
+    return true;
+}
+
+function combo_label(c) {
+    if (!c) return 'no hotkey';
+    var parts = [];
+    if (c.ctrl) parts.push('Ctrl');
+    if (c.alt) parts.push('Alt');
+    if (c.shift) parts.push('Shift');
+    if (c.meta) parts.push('Meta');
+    var names = { ',': ', (comma)', '.': '. (dot)' };
+    parts.push(names[c.key] || (c.keyText.length == 1 ? c.keyText.toUpperCase() : c.keyText));
+    return parts.join(' + ');
+}
 
 function hotkey_label(hk) {
     if (hk.label) return hk.label;
-    var names = { ',': ', (comma)', '.': '. (dot)' };
-    var label = (hk.alt ? 'Alt + ' : '') + (names[hk.key] || hk.key.toUpperCase());
-    return hk.extra ? label + ', or ' + hk.extra : label;
+    var label = combo_label(hk.combo);
+    if (hk.hold && hk.hold.combo) label += ', or hold ' + combo_label(hk.hold.combo);
+    return label;
 }
 
-function hotkey_matches(hk, e) {
-    if (!hk.key || e.ctrlKey || e.metaKey || !!hk.alt !== e.altKey) return false;
-    if (hk.alt) {
-        // keyCode keeps Alt shortcuts working on layouts where Alt changes e.key
-        return e.keyCode === hk.key.toUpperCase().charCodeAt(0) || (e.key && e.key.toLowerCase() === hk.key);
-    }
-    return e.key === hk.key;
-}
+set_hotkeys(ts_hotkey_config);
 
 document.addEventListener('keyup', function(e) {
     for (var id in ts_hotkeys) {
         var hk = ts_hotkeys[id];
-        if (!hk.action || !hotkey_matches(hk, e)) continue;
-        if (!hk.alt && textWriting) continue; // plain keys are being typed into a text box
-        if (hk.alt) e.preventDefault();
+        if (!hk.action || !combo_matches(hk.combo, e)) continue;
+        var plain = !hk.combo.ctrl && !hk.combo.alt && !hk.combo.meta;
+        if (plain && textWriting) continue; // plain keys are being typed into a text box
+        if (!plain) e.preventDefault();
         hk.action();
     }
 });
+
+// Pen off: drawings stay visible, but clicks and touches go through to the card
+var penEnabled = true;
+
+function set_pen_enabled(on) {
+    if (penEnabled == on) return;
+    penEnabled = on;
+    canvas.style.pointerEvents = secondary_canvas.style.pointerEvents = on ? '' : 'none';
+    ts_pen_toggle_button.className = on ? '' : 'active';
+}
+
+function toggle_pen() {
+    stop_drawing();
+    if (penEnabled) { clear_selection(); set_spot_erase(false); }
+    set_pen_enabled(!penEnabled);
+    show_toast(penEnabled ? 'Pen on' : 'Pen off: clicks go to the card');
+}
 
 function show_tooltip(button) {
     var hk = ts_hotkeys[button.dataset.hotkey];
@@ -2982,6 +3092,74 @@ def ts_change_eraser_size():
         ts_eraser_size = value
         execute_js(f"eraserSize = {value};")
 
+class HotkeyDialog(QDialog):
+    def __init__(self):
+        super().__init__(mw)
+        self.setWindowTitle("AnkiDraw Hotkeys")
+        self.edits = {}
+        grid = QGridLayout()
+        for row, (hid, name, default) in enumerate(ts_hotkey_defaults):
+            edit = QKeySequenceEdit(QKeySequence(ts_hotkeys_custom.get(hid, default)))
+            if hasattr(edit, "setMaximumSequenceLength"):
+                edit.setMaximumSequenceLength(1)  # one key combination, not a sequence
+            if hasattr(edit, "setClearButtonEnabled"):
+                edit.setClearButtonEnabled(True)
+            grid.addWidget(QLabel(name), row, 0)
+            grid.addWidget(edit, row, 1)
+            self.edits[hid] = edit
+
+        note = QLabel("Click a box and press the new key. Clear a box to remove its hotkey.\n"
+                      "Keys without Alt or Ctrl are ignored while writing text.\n"
+                      "Delete/Backspace (delete selection) and R (Anki's replay audio) are fixed.")
+
+        accept_button = QPushButton("Accept")
+        cancel_button = QPushButton("Cancel")
+        reset_button = QPushButton("Default")
+        accept_button.clicked.connect(self.accept)
+        cancel_button.clicked.connect(self.reject)
+        reset_button.clicked.connect(self.reset_to_default)
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(accept_button)
+        button_layout.addWidget(reset_button)
+        button_layout.addWidget(cancel_button)
+
+        layout = QVBoxLayout()
+        layout.addLayout(grid)
+        layout.addWidget(note)
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+    def combos(self):
+        result = {}
+        for hid, edit in self.edits.items():
+            seq = edit.keySequence()
+            result[hid] = QKeySequence(seq[0]).toString(QKeySequence.SequenceFormat.PortableText) if seq.count() else ""
+        return result
+
+    def reset_to_default(self):
+        for hid, name, default in ts_hotkey_defaults:
+            self.edits[hid].setKeySequence(QKeySequence(default))
+
+    def accept(self):
+        names = {hid: name for hid, name, default in ts_hotkey_defaults}
+        used = {}
+        for hid, combo in self.combos().items():
+            if combo and combo in used:
+                showWarning(f"{combo} is set for both \"{names[used[combo]]}\" and \"{names[hid]}\".")
+                return
+            used[combo] = hid
+        super().accept()
+
+@slot()
+def ts_change_hotkeys():
+    global ts_hotkeys_custom
+    dialog = HotkeyDialog()
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        defaults = {hid: default for hid, name, default in ts_hotkey_defaults}
+        # Only store changes, so later default changes still reach keys the user never touched
+        ts_hotkeys_custom = {hid: combo for hid, combo in dialog.combos().items() if combo != defaults[hid]}
+        execute_js("if (typeof set_hotkeys === 'function') { set_hotkeys(" + json.dumps(ts_hotkey_config()) + "); }")
+
 class PenPressureDialog(QDialog):
     def __init__(self, pressure_enabled, fixed_pressure):
         super().__init__(mw)
@@ -3124,6 +3302,7 @@ def ts_setup_menu():
     ts_toolbar_settings = QAction("""&Toolbar and canvas location settings""", mw)
     ts_pressure_settings = QAction("""Pen p&ressure settings...""", mw)
     ts_eraser_settings = QAction("""Set spot &eraser size...""", mw)
+    ts_hotkey_settings = QAction("""Configure &hotkeys...""", mw)
     ts_font_settings = QAction("""Select &Font for text writing""", mw)    
 
     ts_toggle_seq = QKeySequence("Ctrl+r")
@@ -3171,6 +3350,7 @@ def ts_setup_menu():
     mw.addon_view_menu.addMenu(ts_pen_opacity_menu)
     mw.addon_view_menu.addAction(ts_pressure_settings)
     mw.addon_view_menu.addAction(ts_eraser_settings)
+    mw.addon_view_menu.addAction(ts_hotkey_settings)
     mw.addon_view_menu.addAction(ts_toolbar_settings)
     mw.addon_view_menu.addAction(ts_font_settings)
 
@@ -3196,6 +3376,7 @@ def ts_setup_menu():
     ts_toolbar_settings.triggered.connect(ts_change_toolbar_settings)
     ts_pressure_settings.triggered.connect(ts_change_pen_pressure_settings)
     ts_eraser_settings.triggered.connect(ts_change_eraser_size)
+    ts_hotkey_settings.triggered.connect(ts_change_hotkeys)
     ts_font_settings.triggered.connect(ts_change_font_settings)
 
 #

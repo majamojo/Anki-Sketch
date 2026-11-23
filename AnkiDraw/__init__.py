@@ -59,6 +59,7 @@ saved_value_defaults = {
     'ts_follow': False,
     'ts_pressure_sensitivity': True,
     'ts_fixed_pressure': 0.5,
+    'ts_eraser_size': 20,
     'ts_orient_vertical': True,
     'ts_y_offset': 2,
     'ts_small_width': 500,
@@ -220,6 +221,11 @@ def blackboard_html():
         <button id="ts_stroke_delete_button" data-hotkey="stroke_delete"
             onclick="switch_stroke_delete_mode()" >
         <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 3l18 18" /><path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l5 -4.993m2.009 -2.01l3 -3a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41c-1.417 1.431 -2.406 2.432 -2.97 3m-2.02 2.043l-4.211 4.256" /><path d="M18 13.3l-6.3 -6.3" /></svg>
+        </button>
+
+        <button id="ts_spot_erase_button" data-hotkey="spot_erase"
+            onclick="switch_spot_erase_mode()" >
+        <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M19 20h-10.5l-4.21 -4.3a1 1 0 0 1 0 -1.41l10 -10a1 1 0 0 1 1.41 0l5 5a1 1 0 0 1 0 1.41l-9.2 9.3" /><path d="M18 13.3l-6.3 -6.3" /></svg>
         </button>
 
         <button id="ts_select_button" data-hotkey="select"
@@ -465,6 +471,8 @@ var strokeDelete = false;
 var textWriting = false;
 var isDeleting = false;  // Track if currently deleting (for hold mode)
 var selectMode = false;  // Lasso select tool
+var spotErase = false;   // Spot eraser: rubs out parts of strokes
+var eraserSize = """ + str(ts_eraser_size) + """; // spot eraser diameter in px
 var pen1Color = """ + "\'" + str(ts_pen1_color) + "\'" + """;
 var pen1Width = """ + str(ts_pen1_width) + """;
 var pen2Color = """ + "\'" + str(ts_pen2_color) + "\'" + """;
@@ -542,6 +550,7 @@ var ts_text_button = document.getElementById('ts_text_button');
 var ts_perfect_freehand_button = document.getElementById('ts_perfect_freehand_button');
 var ts_stroke_delete_button = document.getElementById('ts_stroke_delete_button');
 var ts_select_button = document.getElementById('ts_select_button');
+var ts_spot_erase_button = document.getElementById('ts_spot_erase_button');
 var ts_delete_selection_button = document.getElementById('ts_delete_selection_button');
 var ts_tooltip = document.getElementById('ts_tooltip');
 var ts_toast = document.getElementById('ts_toast');
@@ -600,6 +609,7 @@ function recolor_based_on_active_pen()
 function activate_pen1()
 {
     exit_select_mode()
+    set_spot_erase(false)
     activePenIndex = 0
     update_pen_settings();
 }
@@ -607,6 +617,7 @@ function activate_pen1()
 function activate_pen2()
 {
     exit_select_mode()
+    set_spot_erase(false)
     activePenIndex = 1
     update_pen_settings();
 }
@@ -614,6 +625,7 @@ function activate_pen2()
 function activate_pen3()
 {
     exit_select_mode()
+    set_spot_erase(false)
     activePenIndex = 2
     update_pen_settings();
 }
@@ -621,6 +633,7 @@ function activate_pen3()
 function activate_pen4()
 {
     exit_select_mode()
+    set_spot_erase(false)
     activePenIndex = 3
     update_pen_settings();
 }
@@ -632,6 +645,7 @@ function reset_drawing_modes()
     ts_stroke_delete_button.className = '';
     ts_text_button.className = '';
     ts_select_button.className = '';
+    set_spot_erase(false);
     calligraphy = false;
     perfectFreehand = false;
     strokeDelete = false
@@ -651,6 +665,7 @@ strokeDelete_activated = false
 textWriting_activated = false;
 ts_select_button_class = '';
 selectMode_activated = false;
+spotErase_activated = false;
 
 function save_drawing_modes_for_delete()
 {
@@ -662,9 +677,12 @@ function save_drawing_modes_for_delete()
     perfectFreehand_activated = perfectFreehand
     textWriting_activated = textWriting
     selectMode_activated = selectMode
-    // Stroke delete takes over the pointer, so the lasso must not run alongside it
+    spotErase_activated = spotErase
+    // Stroke delete takes over the pointer, so the lasso and spot eraser must not run alongside it
     selectMode = false
     ts_select_button.className = ''
+    spotErase = false
+    ts_spot_erase_button.className = ''
     reset_to_main_pen_settings()
     ts_redraw()
 }
@@ -679,6 +697,8 @@ function restore_drawing_modes_for_delete()
     perfectFreehand = perfectFreehand_activated
     textWriting = textWriting_activated
     selectMode = selectMode_activated
+    spotErase = spotErase_activated
+    ts_spot_erase_button.className = spotErase ? 'active' : ''
     reset_to_main_pen_settings()
     ts_redraw()
 }
@@ -1016,6 +1036,10 @@ function ts_undo(){
             case 'M'://Moved selection
                 translate_actions(poppedAction.movedList, -poppedAction.dx, -poppedAction.dy)
                 break;
+            case 'E'://Spot erase: drop the leftover pieces, bring back the originals
+                poppedAction.pieces.forEach(() => { lineHistory.pop(); stroke_cache[lineHistory.length] = null; });
+                poppedAction.erasedList.forEach(i => { lineHistory[i].visible = true });
+                break;
             case 'X'://Clear actions
                 break;
             case 'T'://Text Writing actions
@@ -1038,6 +1062,7 @@ function ts_redo() {
     
     var redoAction = redoStack.pop();
     show_toast('Redo: ' + describe_action(redoAction))
+    if (redoAction.type == 'E') redoAction.pieces.forEach(p => lineHistory.push(p)); // pieces sit just before the erase
     readd_action_to_history(redoAction)
     ts_undo_button.className = "active";
     switch (redoAction.type) {
@@ -1050,6 +1075,9 @@ function ts_redo() {
             break;
         case 'M'://Moved selection
             translate_actions(redoAction.movedList, redoAction.dx, redoAction.dy)
+            break;
+        case 'E'://Spot erase
+            redoAction.erasedList.forEach(i => { lineHistory[i].visible = false });
             break;
         case 'X'://Delete Stroke Lines
             break;
@@ -1239,6 +1267,8 @@ async function draw_upto_latest_point_async(startLine, startPoint, startStroke){
             case 'X'://Clear Screen
                 break;
             case 'M'://Move selection
+                break;
+            case 'E'://Spot erase (its pieces are separate entries)
                 break;
             case 'T'://Write Text
                 var save = ctx.strokeStyle
@@ -1783,6 +1813,10 @@ document.addEventListener('keydown', function(e) {
         delete_selection();
         return;
     }
+    if (e.keyCode == 69 && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        if (!e.repeat) enter_spot_erase_hold();
+    }
     if ((e.keyCode == 68 || e.key == "d") && e.shiftKey) {
         e.preventDefault();
         // Only activate if this is NOT a repeat event (first press)
@@ -1798,6 +1832,10 @@ document.addEventListener('keyup', function(e) {
     if ((e.keyCode == 68 || e.key == "d") && isDeleting) {
         finishDelete()
         exit_stroke_delete_mode();
+    }
+    // Hold mode for the spot eraser: back to the previous tool when shift+e is released
+    if (e.keyCode == 69 && spotEraseHeld) {
+        exit_spot_erase_hold();
     }
 });
 // TODO chinese mode?
@@ -1816,6 +1854,7 @@ var ts_hotkeys = {
     text:             { name: 'Text writing',                key: 't',  alt: true, action: switch_text_writing_mode },
     stroke_delete:    { name: 'Stroke delete (circle to erase inside)', key: 'd', alt: true, extra: 'hold Shift + D',
                         action: function() { finishDelete(); switch_stroke_delete_mode(); } },
+    spot_erase:       { name: 'Spot eraser',                 key: 'e',  alt: true, extra: 'hold Shift + E', action: switch_spot_erase_mode },
     select:           { name: 'Select (lasso, then drag to move)', key: 's', alt: true, action: switch_select_mode },
     delete_selection: { name: 'Delete selection',            label: 'Delete / Backspace' },
     undo:             { name: 'Undo',                        key: 'z',  alt: true, action: ts_undo },
@@ -1904,12 +1943,14 @@ function show_toast(message) {
 }
 
 function describe_action(action) {
+    if (!action) return 'last action';
     switch (action.type) {
         case 'L':
         case 'P': return 'stroke';
         case 'C': return 'calligraphy stroke';
         case 'T': return 'text "' + (action.text.length > 20 ? action.text.slice(0, 20) + '...' : action.text) + '"';
         case 'D': return 'delete (' + action.deletedList.length + (action.deletedList.length == 1 ? ' item)' : ' items)');
+        case 'E': return 'erase';
         case 'M': return 'move (' + action.movedList.length + (action.movedList.length == 1 ? ' item)' : ' items)');
         case 'X': return 'clear canvas';
         default: return 'last action';
@@ -2244,6 +2285,7 @@ function selectionPointerDown(e) {
     lastPointerType = e.pointerType;
     if (selectionDrag || lassoPoints) { e.stopPropagation(); e.preventDefault(); return; } // duplicate pointer
     if (!is_canvas_target(e) || e.button > 0) return;
+    if (spotErase) { clear_selection(); return; }
     var pt = canvas_point(e);
     if (point_in_box(pt, selection_box())) {
         e.stopPropagation();
@@ -2286,7 +2328,7 @@ function selectionPointerMove(e) {
         }
         return;
     }
-    if (selectedIndices.length && is_canvas_target(e) && !isPointerDown) {
+    if (selectedIndices.length && is_canvas_target(e) && !isPointerDown && !spotErase) {
         set_canvas_cursor(point_in_box(canvas_point(e), selection_box()) ? 'move' : '');
     }
 }
@@ -2323,6 +2365,192 @@ window.addEventListener('pointercancel', selectionPointerUp, true);
 wrapper.addEventListener('contextmenu', function(e) {
     if (is_canvas_target(e) && lastPointerType === 'pen') e.preventDefault();
 });
+
+// ----------------------------------------- Spot eraser -----------------------------------------
+// Rubs out the parts of strokes under the eraser, like a normal eraser. Strokes are cut into the
+// pieces that survive (kept as normal strokes, so they can still be selected, moved and undone).
+// Text can't be cut, so text the eraser touches is removed whole.
+
+var eraserPath = null;     // points rubbed over in the current erase
+var spotEraseHeld = false; // shift + e held down
+var spotEraseBeforeHold = false;
+
+function set_spot_erase(on) {
+    if (spotErase == on) return;
+    stop_drawing();
+    spotErase = on;
+    ts_spot_erase_button.className = on ? 'active' : '';
+    if (!on) draw_selection_overlay(); // remove the eraser outline
+}
+
+function switch_spot_erase_mode() {
+    if (isDeleting || spotEraseHeld) return;
+    if (strokeDelete) { finishDelete(); switch_stroke_delete_mode(); } // turns stroke delete off
+    exit_select_mode();
+    set_spot_erase(!spotErase);
+}
+
+function enter_spot_erase_hold() {
+    if (spotEraseHeld || isDeleting) return;
+    spotEraseHeld = true;
+    spotEraseBeforeHold = spotErase;
+    set_spot_erase(true);
+}
+
+function exit_spot_erase_hold() {
+    if (eraserPath) finish_spot_erase();
+    spotEraseHeld = false;
+    set_spot_erase(spotEraseBeforeHold);
+}
+
+function distance_to_path(p, path) {
+    if (path.length == 1) return getDist(p, path[0]);
+    var best = Infinity;
+    for (var i = 0; i < path.length - 1; i++) {
+        var d = distance_to_segment(p, path[i], path[i + 1]);
+        if (d < best) best = d;
+    }
+    return best;
+}
+
+function lerp_point(p, q, t) {
+    return p.map((v, k) => v + (q[k] - v) * t);
+}
+
+// Returns the surviving pieces of a stroke (array of actions), or null if the eraser missed it
+function split_stroke(a, path, radius) {
+    var step = a.type == 'C' ? 4 : 2;
+    var pts = a.points, dense = [], added = [];
+    // Add points near the eraser so the cut lands where the eraser actually was
+    for (var k = 0; k < pts.length; k++) {
+        dense.push(pts[k]); added.push(false);
+        if (k == pts.length - 1) break;
+        var d = getDist(pts[k], pts[k + 1]);
+        if (d > step && distance_to_path(lerp_point(pts[k], pts[k + 1], 0.5), path) <= radius + d / 2) {
+            var n = Math.ceil(d / step);
+            for (var s = 1; s < n; s++) { dense.push(lerp_point(pts[k], pts[k + 1], s / n)); added.push(true); }
+        }
+    }
+    var erased = dense.map(p => distance_to_path(p, path) <= radius);
+    if (erased.indexOf(true) < 0) return null;
+    // Of the added points keep only the ones at the cut edge, so the rest of the stroke keeps its
+    // original spacing (perfect freehand reads spacing as speed, which changes the line's thickness)
+    var keep = dense.map((p, i) => !erased[i] && (!added[i] || erased[i - 1] === true || erased[i + 1] === true));
+    var pieces = [], run = [];
+    dense.concat([null]).forEach((p, i) => {
+        if (p && keep[i]) { run.push(p.slice()); return; }
+        if (p && !erased[i]) return; // dropped helper point, not a cut
+        if (run.length >= 2) {
+            // Simple lines end halfway between their last two points; repeat the end point
+            // (as finished strokes do) so the piece reaches the edge of the cut
+            if (a.type == 'L') run.push(run[run.length - 1].slice());
+            pieces.push(Object.assign({}, a, { points: run, visible: true }));
+        }
+        run = [];
+    });
+    return pieces;
+}
+
+function finish_spot_erase() {
+    var path = eraserPath;
+    eraserPath = null;
+    wrapper.classList.remove('nopointer');
+    if (!path) return;
+    var radius = eraserSize / 2;
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    path.forEach(p => {
+        minX = Math.min(minX, p[0] - radius); maxX = Math.max(maxX, p[0] + radius);
+        minY = Math.min(minY, p[1] - radius); maxY = Math.max(maxY, p[1] + radius);
+    });
+    var erasedList = [], pieces = [];
+    for (var i = 0; i < lineHistory.length; i++) {
+        if (!is_selectable_index(i)) continue;
+        var a = lineHistory[i], b = action_bounds(a);
+        if (b.maxX < minX || b.minX > maxX || b.maxY < minY || b.minY > maxY) continue;
+        if (a.type == 'T') {
+            var box = { minX: b.minX - radius, minY: b.minY - radius, maxX: b.maxX + radius, maxY: b.maxY + radius };
+            if (path.some(p => point_in_box(p, box))) erasedList.push(i);
+            continue;
+        }
+        var result = split_stroke(a, path, radius);
+        if (result) { erasedList.push(i); pieces = pieces.concat(result); }
+    }
+    if (erasedList.length) {
+        erasedList.forEach(i => { lineHistory[i].visible = false });
+        pieces.forEach(p => lineHistory.push(p));
+        add_action_to_history({ type: 'E', erasedList: erasedList, pieces: pieces, visible: true });
+        refresh_selection();
+    }
+    ts_redraw(); // replace the live preview with the real result
+}
+
+function draw_eraser_outline(pt) {
+    draw_selection_overlay(); // also clears the old outline
+    if (!pt) return;
+    secondary_ctx.save();
+    secondary_ctx.lineWidth = 1;
+    secondary_ctx.strokeStyle = 'rgba(120, 120, 120, 1)';
+    secondary_ctx.beginPath();
+    secondary_ctx.arc(pt[0], pt[1], eraserSize / 2, 0, 2 * Math.PI);
+    secondary_ctx.stroke();
+    secondary_ctx.restore();
+}
+
+// Live preview: punch the eraser path out of the main canvas while rubbing
+function erase_preview(from, to) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.lineCap = ctx.lineJoin = 'round';
+    ctx.lineWidth = eraserSize;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 1)';
+    ctx.beginPath();
+    ctx.moveTo(from[0], from[1]);
+    ctx.lineTo(to[0] + 0.01, to[1]);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function spotErasePointerDown(e) {
+    if (!spotErase || !e.isPrimary) return;
+    if (eraserPath) { e.stopPropagation(); e.preventDefault(); return; } // duplicate pointer
+    if (!is_canvas_target(e) || e.button > 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    submitCurrentText();
+    var pt = canvas_point(e);
+    eraserPath = [pt];
+    wrapper.classList.add('nopointer');
+    erase_preview(pt, pt);
+    draw_eraser_outline(pt);
+}
+
+function spotErasePointerMove(e) {
+    if (!spotErase || !e.isPrimary) return;
+    var pt = canvas_point(e);
+    if (eraserPath) {
+        e.stopPropagation();
+        e.preventDefault();
+        var last = eraserPath[eraserPath.length - 1];
+        if (getDist(pt, last) >= 2) {
+            eraserPath.push(pt);
+            erase_preview(last, pt);
+        }
+        draw_eraser_outline(pt);
+    } else if (is_canvas_target(e)) {
+        draw_eraser_outline(pt); // show the eraser size while hovering
+    }
+}
+
+function spotErasePointerUp(e) {
+    if (!eraserPath || !e.isPrimary) return;
+    e.stopPropagation();
+    finish_spot_erase();
+}
+
+window.addEventListener('pointerdown', spotErasePointerDown, true);
+window.addEventListener('pointermove', spotErasePointerMove, true);
+window.addEventListener('pointerup', spotErasePointerUp, true);
+window.addEventListener('pointercancel', spotErasePointerUp, true);
 
 // ----------------------------------------- Perfect Freehand -----------------------------------------
 
@@ -2743,6 +2971,17 @@ def ts_change_pressure_sensitivity_settings():
     ts_pressure_sensitivity = not ts_pressure_sensitivity
     ts_apply_pressure_settings()
 
+@slot()
+def ts_change_eraser_size():
+    """
+    Set the spot eraser diameter.
+    """
+    global ts_eraser_size
+    value, accepted = QInputDialog.getInt(mw, "AnkiDraw", "Spot eraser size (diameter in px):", int(ts_eraser_size), 2, 200)
+    if accepted:
+        ts_eraser_size = value
+        execute_js(f"eraserSize = {value};")
+
 class PenPressureDialog(QDialog):
     def __init__(self, pressure_enabled, fixed_pressure):
         super().__init__(mw)
@@ -2884,6 +3123,7 @@ def ts_setup_menu():
     ts_menu_zen_mode = QAction("""Enable Zen Mode(hide toolbar until disabled)""", mw, checkable=True)
     ts_toolbar_settings = QAction("""&Toolbar and canvas location settings""", mw)
     ts_pressure_settings = QAction("""Pen p&ressure settings...""", mw)
+    ts_eraser_settings = QAction("""Set spot &eraser size...""", mw)
     ts_font_settings = QAction("""Select &Font for text writing""", mw)    
 
     ts_toggle_seq = QKeySequence("Ctrl+r")
@@ -2930,6 +3170,7 @@ def ts_setup_menu():
     mw.addon_view_menu.addMenu(ts_pen_width_menu)
     mw.addon_view_menu.addMenu(ts_pen_opacity_menu)
     mw.addon_view_menu.addAction(ts_pressure_settings)
+    mw.addon_view_menu.addAction(ts_eraser_settings)
     mw.addon_view_menu.addAction(ts_toolbar_settings)
     mw.addon_view_menu.addAction(ts_font_settings)
 
@@ -2954,6 +3195,7 @@ def ts_setup_menu():
     ts_menu_zen_mode.triggered.connect(ts_change_zen_mode_settings)
     ts_toolbar_settings.triggered.connect(ts_change_toolbar_settings)
     ts_pressure_settings.triggered.connect(ts_change_pen_pressure_settings)
+    ts_eraser_settings.triggered.connect(ts_change_eraser_size)
     ts_font_settings.triggered.connect(ts_change_font_settings)
 
 #

@@ -8,6 +8,16 @@ Website to test the drawing functionality: https://rytisgit.github.io/Anki-Stylu
   </a><br>
 
 # Changes
+* Added lasso select (<kbd>alt + s</kbd>): drag a selection to move it from any tool (the cursor changes to move when hovering it), <kbd>Delete</kbd>/<kbd>Backspace</kbd> or the bin button deletes it
+* Stroke delete now also erases everything inside a closed loop (circle or any shape that crosses itself)
+* Added spot eraser (<kbd>alt + e</kbd>, or hold <kbd>shift + e</kbd>): rubs out just the parts of strokes under it; text it touches is removed whole. Size: `AnkiDraw → Set spot eraser size...`
+* Hold the pen still at the end of a stroke to snap it to a straight line; keep moving to adjust the end, lift to finish
+* Windows pen press-and-hold circle (and long-press right click) is disabled while Anki is running
+* Toolbar tooltips show each button's name and hotkey; undo/redo show a short message in the top right
+* Hotkeys can be changed in `AnkiDraw → Configure hotkeys...` (tooltips follow your keys)
+* Added pen on/off toggle (<kbd>v</kbd>): with the pen off, drawings stay visible but clicks and touches go to the card
+* The canvas shows its own dot cursor in the pen's colour and size, so it no longer reverts to the arrow after switching windows or returning from the deck list
+* Added `AnkiDraw → Pen pressure settings...`: turn pressure sensitivity off and set the fixed pressure (line thickness) used instead
 * Added background color selection
 * Added follow screen mode(menu option) and small canvas mode(<kbd>alt + b</kbd>) to increase drawing speed on very big cards 
 * Added toolbar location configuration and other small fixes.
